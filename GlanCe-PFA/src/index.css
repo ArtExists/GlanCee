@@ -1,0 +1,136 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --hud-primary: #00f0ff;
+    --hud-primary-rgb: 0, 240, 255;
+    --hud-secondary: #00ff9d;
+    --hud-secondary-rgb: 0, 255, 157;
+    --hud-bg-alpha: rgba(5, 7, 13, 0.85);
+  }
+
+  body {
+    background-color: #03060c;
+    color: #e2e8f0;
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+    user-select: none;
+    overflow: hidden;
+  }
+}
+
+/* Theme variations */
+body[data-theme="EMERALD_TACTICAL"] {
+  --hud-primary: #00ff9d;
+  --hud-primary-rgb: 0, 255, 157;
+  --hud-secondary: #00f0ff;
+  --hud-secondary-rgb: 0, 240, 255;
+}
+
+body[data-theme="AMBER_MATRIX"] {
+  --hud-primary: #ffb300;
+  --hud-primary-rgb: 255, 179, 0;
+  --hud-secondary: #ff3366;
+  --hud-secondary-rgb: 255, 51, 102;
+}
+
+body[data-theme="VIOLET_CYBER"] {
+  --hud-primary: #c084fc;
+  --hud-primary-rgb: 192, 132, 252;
+  --hud-secondary: #00f0ff;
+  --hud-secondary-rgb: 0, 240, 255;
+}
+
+/* Glassmorphism Classes */
+.glass-panel {
+  background: rgba(8, 14, 28, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(var(--hud-primary-rgb), 0.25);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5), inset 0 0 12px rgba(var(--hud-primary-rgb), 0.05);
+}
+
+.glass-panel-glow {
+  background: rgba(10, 18, 36, 0.82);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(var(--hud-primary-rgb), 0.45);
+  box-shadow: 0 0 25px rgba(var(--hud-primary-rgb), 0.25), inset 0 0 15px rgba(var(--hud-primary-rgb), 0.1);
+}
+
+.glass-button {
+  background: rgba(var(--hud-primary-rgb), 0.08);
+  border: 1px solid rgba(var(--hud-primary-rgb), 0.3);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-button:hover {
+  background: rgba(var(--hud-primary-rgb), 0.2);
+  border-color: rgba(var(--hud-primary-rgb), 0.7);
+  box-shadow: 0 0 15px rgba(var(--hud-primary-rgb), 0.4);
+  transform: translateY(-1px);
+}
+
+.glass-button:active {
+  transform: translateY(0px) scale(0.98);
+}
+
+/* Custom Scrollbar for HUD */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(var(--hud-primary-rgb), 0.4);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--hud-primary-rgb), 0.8);
+}
+
+/* Futuristic Scanline Overlay */
+.scanlines {
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.25) 50%
+  ), linear-gradient(
+    90deg,
+    rgba(255, 0, 0, 0.03),
+    rgba(0, 255, 0, 0.01),
+    rgba(0, 0, 255, 0.03)
+  );
+  background-size: 100% 3px, 6px 100%;
+  pointer-events: none;
+}
+
+/* Smart Glasses Vignette / FOV Mask */
+.glasses-vignette {
+  background: radial-gradient(
+    circle at center,
+    transparent 60%,
+    rgba(0, 0, 0, 0.5) 85%,
+    rgba(3, 6, 12, 0.95) 100%
+  );
+  pointer-events: none;
+}
+
+/* Holographic Grid */
+.hud-grid {
+  background-size: 40px 40px;
+  background-image: 
+    linear-gradient(to right, rgba(var(--hud-primary-rgb), 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(var(--hud-primary-rgb), 0.05) 1px, transparent 1px);
+}
+
+/* Laser Ray glow effect */
+.laser-ray {
+  filter: drop-shadow(0 0 8px rgba(var(--hud-primary-rgb), 0.8));
+}

@@ -1,0 +1,407 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { AppMode, AppSettings, BoundingBox, IdentifiedCard, SimulationPreset } from './types';
+import { TopBar } from './components/GlassesHUD/TopBar';
+import { ModeToggle } from './components/GlassesHUD/ModeToggle';
+import { CameraViewport } from './components/GlassesHUD/CameraViewport';
+import { AnchoredCard } from './components/GlassesHUD/AnchoredCard';
+import { ManualTriggerButton } from './components/GlassesHUD/ManualTriggerButton';
+import { VoiceIndicator } from './components/GlassesHUD/VoiceIndicator';
+import { SettingsModal } from './components/GlassesHUD/SettingsModal';
+import { SimulationBench } from './components/GlassesHUD/SimulationBench';
+import { TutorialOverlay } from './components/GlassesHUD/TutorialOverlay';
+import { vlmService } from './services/vlmService';
+import { wikipediaService } from './services/wikipediaService';
+import { speechService, VoiceCommandAction } from './services/speechService';
+import { audioFX } from './services/audioEffects';
+import { GestureDetectionResult } from './services/gestureDetector';
+
+const DEFAULT_SETTINGS: AppSettings = {
+  mistralApiKey: import.meta.env.VITE_MISTRAL_API_KEY || '',
+  anthropicApiKey: import.meta.env.VITE_ANTHROPIC_API_KEY || '',
+  geminiApiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
+  openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
+  groqApiKey: import.meta.env.VITE_GROQ_API_KEY || '',
+  backendUrl: 'http://localhost:8000',
+  autoSpeak: true,
+  voiceRate: 1.0,
+  voicePitch: 1.0,
+  autoCaptureStability: true,
+  showLandmarks: false,
+  cameraFacingMode: 'environment',
+};
+
+export const App: React.FC = () => {
+  // Application State
+  const [mode, setMode] = useState<AppMode>('HOLDING');
+  const [cards, setCards] = useState<IdentifiedCard[]>([]);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [speakingCardId, setSpeakingCardId] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<string>('');
+  const [currentDetection, setCurrentDetection] = useState<GestureDetectionResult | null>(null);
+  const [simulationImage, setSimulationImage] = useState<string | null>(null);
+  const [activeModal, setActiveModal] = useState<'SETTINGS' | 'SIMULATION' | 'TUTORIAL' | null>(null);
+
+  // Settings loaded from localStorage
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    try {
+      const saved = localStorage.getItem('glance_settings');
+      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+
+  const lastBoxRef = useRef<BoundingBox>({ x: 0.25, y: 0.25, width: 0.5, height: 0.5 });
+  const pipelineLockRef = useRef<boolean>(false);
+
+  // Sync API Keys to VLM & Speech Services
+  useEffect(() => {
+    vlmService.setMistralApiKey(settings.mistralApiKey);
+    vlmService.setAnthropicApiKey(settings.anthropicApiKey);
+    vlmService.setGeminiApiKey(settings.geminiApiKey);
+    vlmService.setOpenaiApiKey(settings.openaiApiKey);
+    vlmService.setGroqApiKey(settings.groqApiKey);
+    vlmService.setBackendUrl(settings.backendUrl);
+
+    speechService.setBackendUrl(settings.backendUrl);
+    speechService.setWhisperApiKey(settings.groqApiKey || settings.openaiApiKey);
+    speechService.setVoiceSettings(settings.voiceRate, settings.voicePitch);
+
+    localStorage.setItem('glance_settings', JSON.stringify(settings));
+  }, [settings]);
+
+  // Execute the Object Identification + Wikipedia RAG + Calm Narrator Pipeline
+  const executeIdentificationPipeline = useCallback(
+    async (box: BoundingBox, source: HTMLVideoElement | HTMLImageElement, customHint?: string) => {
+      // Hard mutex lock: prevent ANY new object detection while one is being identified or processed
+      if (pipelineLockRef.current) {
+        return;
+      }
+      pipelineLockRef.current = true;
+      setIsProcessing(true);
+
+      try {
+        audioFX.playScanningSweep();
+
+        // 1. Crop high-resolution image from source
+        const cropBase64 = vlmService.cropImage(source, box, 0.10);
+
+        // 2. Identify object class via High-Precision VLM (Backend / Cloud / Fallback)
+        const idResult = await vlmService.identifyObject(cropBase64, mode, customHint);
+
+        // 3. Grounding via Wikipedia REST API
+        const wikiSummary = await wikipediaService.fetchArticleSummary(idResult.search_query);
+
+        // 4. Generate calm narrator answer
+        const narratorAnswers = await vlmService.generateCalmNarratorAnswer(
+          idResult.label,
+          wikiSummary || {
+            title: idResult.label,
+            extract: `${idResult.label} is an identified subject in your field of view.`,
+            contentUrl: `https://en.wikipedia.org/wiki/${encodeURIComponent(idResult.search_query)}`,
+          }
+        );
+
+        // 5. Create new popup card (High Confidence)
+        const newCard: IdentifiedCard = {
+          id: 'card-' + Date.now(),
+          timestamp: Date.now(),
+          label: idResult.label,
+          confidence: idResult.confidence || 'high',
+          shortAnswer: narratorAnswers.shortAnswer,
+          expandedText: narratorAnswers.expandedText,
+          wikiTitle: wikiSummary?.title || idResult.label,
+          wikiUrl: wikiSummary?.contentUrl || `https://en.wikipedia.org/wiki/${encodeURIComponent(idResult.search_query)}`,
+          wikiThumbnail: wikiSummary?.thumbnailUrl,
+          box: { ...box },
+          croppedThumbnailUrl: cropBase64,
+          mode: mode,
+          provider: idResult.provider,
+        };
+
+        // Add to stack of cards
+        setCards((prev) => [newCard, ...prev.slice(0, 4)]);
+        audioFX.playCardReveal();
+
+        // 6. Speak aloud via Calm Narrator if enabled
+        if (settings.autoSpeak) {
+          setSpeakingCardId(newCard.id);
+          speechService.speak(narratorAnswers.shortAnswer, () => {
+            setSpeakingCardId(null);
+          });
+        }
+      } catch (error) {
+        console.error('Identification pipeline error:', error);
+      } finally {
+        pipelineLockRef.current = false;
+        setIsProcessing(false);
+      }
+    },
+    [mode, settings.autoSpeak]
+  );
+
+  // Auto-capture triggered from stability in CameraViewport
+  const handleAutoCapture = useCallback(
+    (box: BoundingBox, source: HTMLVideoElement | HTMLImageElement) => {
+      if (settings.autoCaptureStability && !pipelineLockRef.current && !isSpeaking) {
+        executeIdentificationPipeline(box, source);
+      }
+    },
+    [settings.autoCaptureStability, isSpeaking, executeIdentificationPipeline]
+  );
+
+  // Manual Trigger Button or Tap Capture
+  const handleManualCapture = useCallback(
+    (hintQuery?: string) => {
+      if (pipelineLockRef.current) return;
+
+      const box = currentDetection?.box || lastBoxRef.current;
+      const source =
+        document.querySelector('video') ||
+        (document.querySelector('img[alt="Simulation Scene"]') as HTMLVideoElement | HTMLImageElement | null);
+
+      if (source) {
+        executeIdentificationPipeline(box, source, hintQuery);
+      }
+    },
+    [currentDetection, executeIdentificationPipeline]
+  );
+
+  // Voice Command Handler (Immediate STOP, IDENTIFY, TELL_ME_MORE, CLEAR, SWITCH_MODE)
+  const handleVoiceCommand = useCallback(
+    (action: VoiceCommandAction, fullQuery?: string) => {
+      if (action === 'STOP') {
+        // Immediate STOP: cut off speech and cancel active tasks
+        speechService.stopSpeaking();
+        setSpeakingCardId(null);
+        pipelineLockRef.current = false;
+        setIsProcessing(false);
+        audioFX.playPinchTrigger();
+        return;
+      }
+
+      if (action === 'IDENTIFY') {
+        audioFX.playTargetLock();
+        // Check if user asked a specific question e.g. "what brand is this phone?"
+        const isSpecificBrandOrModel =
+          fullQuery &&
+          (fullQuery.toLowerCase().includes('brand') ||
+            fullQuery.toLowerCase().includes('model') ||
+            fullQuery.toLowerCase().includes('exact') ||
+            fullQuery.toLowerCase().includes('species') ||
+            fullQuery.toLowerCase().includes('price'));
+
+        const hint = isSpecificBrandOrModel ? fullQuery : undefined;
+        handleManualCapture(hint);
+        return;
+      }
+
+      if (action === 'TELL_ME_MORE') {
+        if (cards.length > 0) {
+          const topCard = cards[0];
+          setSpeakingCardId(topCard.id);
+          audioFX.playVoiceTriggerSound();
+          speechService.speak(topCard.expandedText, () => {
+            setSpeakingCardId(null);
+          });
+        }
+        return;
+      }
+
+      if (action === 'CLEAR') {
+        speechService.stopSpeaking();
+        setSpeakingCardId(null);
+        setCards([]);
+        audioFX.playPinchTrigger();
+        return;
+      }
+
+      if (action === 'SWITCH_MODE') {
+        setMode((prev) => (prev === 'HOLDING' ? 'LOOKING_AT' : 'HOLDING'));
+        audioFX.playPinchTrigger();
+        return;
+      }
+    },
+    [cards, handleManualCapture]
+  );
+
+  // Setup Voice STT Callbacks
+  useEffect(() => {
+    speechService.setCallbacks({
+      onListeningStateChange: (listening) => setIsListening(listening),
+      onSpeakingStateChange: (speaking) => setIsSpeaking(speaking),
+      onTranscript: (text) => setTranscript(text),
+      onCommandTriggered: (action, query) => {
+        handleVoiceCommand(action, query);
+      },
+      onError: (err) => console.warn('Voice error:', err),
+    });
+
+    speechService.startListening(true);
+
+    return () => {
+      speechService.stopListening();
+    };
+  }, [handleVoiceCommand]);
+
+  // Card Speech controls
+  const handlePlayVoice = (card: IdentifiedCard) => {
+    setSpeakingCardId(card.id);
+    speechService.speak(card.shortAnswer, () => {
+      setSpeakingCardId(null);
+    });
+  };
+
+  const handleStopVoice = () => {
+    speechService.stopSpeaking();
+    setSpeakingCardId(null);
+  };
+
+  const handleDismissCard = (id: string) => {
+    if (speakingCardId === id) {
+      speechService.stopSpeaking();
+      setSpeakingCardId(null);
+    }
+    setCards((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  // Preset Scenario Selection
+  const handleSelectPreset = (preset: SimulationPreset) => {
+    setSimulationImage(preset.imageUrl);
+    setMode(preset.mode);
+    lastBoxRef.current = preset.defaultBox;
+
+    const newCard: IdentifiedCard = {
+      id: 'preset-' + Date.now(),
+      timestamp: Date.now(),
+      label: preset.fallbackIdentification.label,
+      confidence: preset.fallbackIdentification.confidence,
+      shortAnswer: preset.fallbackShortAnswer,
+      expandedText: preset.fallbackWiki.extract,
+      wikiTitle: preset.fallbackWiki.title,
+      wikiUrl: preset.fallbackWiki.contentUrl,
+      wikiThumbnail: preset.fallbackWiki.thumbnailUrl,
+      box: preset.defaultBox,
+      croppedThumbnailUrl: preset.imageUrl,
+      mode: preset.mode,
+      provider: preset.fallbackIdentification.provider,
+    };
+
+    setCards([newCard]);
+    if (settings.autoSpeak) {
+      setSpeakingCardId(newCard.id);
+      speechService.speak(preset.fallbackShortAnswer, () => {
+        setSpeakingCardId(null);
+      });
+    }
+  };
+
+  return (
+    <div className="relative w-screen h-screen overflow-hidden bg-[#03060c] font-sans">
+      {/* 1. Full-screen Live Camera Feed / Simulation Background */}
+      <div className="absolute inset-0 z-0">
+        <CameraViewport
+          mode={mode}
+          facingMode={settings.cameraFacingMode}
+          showLandmarks={settings.showLandmarks}
+          cards={cards}
+          onAutoCapture={handleAutoCapture}
+          isProcessing={isProcessing}
+          isSpeaking={isSpeaking}
+          simulationImage={simulationImage}
+          onTargetDetected={(res) => {
+            setCurrentDetection(res);
+            if (res.box) lastBoxRef.current = res.box;
+          }}
+        />
+      </div>
+
+      {/* 2. Minimal Top Bar */}
+      <TopBar
+        isListening={isListening}
+        isSpeaking={isSpeaking}
+        isProcessing={isProcessing}
+        onToggleMic={() => speechService.toggleListening()}
+        onSwitchCamera={() =>
+          setSettings((s) => ({
+            ...s,
+            cameraFacingMode: s.cameraFacingMode === 'user' ? 'environment' : 'user',
+          }))
+        }
+        onOpenSettings={() => setActiveModal('SETTINGS')}
+        onOpenSimulation={() => setActiveModal('SIMULATION')}
+        onOpenTutorial={() => setActiveModal('TUTORIAL')}
+        hasCustomKey={!!(settings.mistralApiKey || settings.anthropicApiKey || settings.geminiApiKey || settings.openaiApiKey || settings.groqApiKey)}
+      />
+
+      {/* 3. Live Voice Waveform & Recognized Speech Indicator */}
+      <VoiceIndicator
+        isListening={isListening}
+        isSpeaking={isSpeaking}
+        transcript={transcript}
+      />
+
+      {/* 4. Spatially Anchored Floating Info Cards (Stacking) */}
+      {cards.map((card, index) => (
+        <AnchoredCard
+          key={card.id}
+          card={card}
+          index={index}
+          totalCards={cards.length}
+          onDismiss={handleDismissCard}
+          isSpeakingThis={speakingCardId === card.id}
+          onPlayVoice={handlePlayVoice}
+          onStopVoice={handleStopVoice}
+        />
+      ))}
+
+      {/* 5. Bottom Controls: Dual Mode Toggle & Tactile Capture Shutter */}
+      <div className="absolute bottom-0 left-0 right-0 z-40 p-4 pb-6 sm:pb-8 flex flex-col items-center gap-3 pointer-events-none">
+        {/* Shutter Button with status pill */}
+        <ManualTriggerButton
+          isProcessing={isProcessing}
+          onTriggerCapture={handleManualCapture}
+          statusMessage={currentDetection?.message}
+        />
+
+        {/* Two Mode Toggles: "What I'm Holding" & "What I'm Looking At" */}
+        <div className="w-full max-w-sm sm:max-w-md pointer-events-auto">
+          <ModeToggle currentMode={mode} onModeChange={(newMode) => setMode(newMode)} />
+        </div>
+      </div>
+
+      {/* Modals & Drawers */}
+      <SettingsModal
+        isOpen={activeModal === 'SETTINGS'}
+        onClose={() => setActiveModal(null)}
+        settings={settings}
+        onUpdateSettings={(newVals) => setSettings((s) => ({ ...s, ...newVals }))}
+        onClearHistory={() => {
+          setCards([]);
+          speechService.stopSpeaking();
+        }}
+      />
+
+      <SimulationBench
+        isOpen={activeModal === 'SIMULATION'}
+        onClose={() => setActiveModal(null)}
+        onSelectPreset={handleSelectPreset}
+        onCustomImageUpload={(dataUrl) => {
+          setSimulationImage(dataUrl);
+          lastBoxRef.current = { x: 0.2, y: 0.2, width: 0.6, height: 0.6 };
+        }}
+        onSwitchToLiveCamera={() => setSimulationImage(null)}
+        isLiveCameraActive={!simulationImage}
+      />
+
+      <TutorialOverlay
+        isOpen={activeModal === 'TUTORIAL'}
+        onClose={() => setActiveModal(null)}
+      />
+    </div>
+  );
+};
+
+export default App;
