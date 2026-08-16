@@ -141,7 +141,7 @@ export const AnchoredCard: React.FC<AnchoredCardProps> = ({
             </div>
 
             {/* Wikipedia Article Citation Link */}
-            {card.wikiUrl && (
+            {card.wikiUrl && card.wikiTitle !== 'Empty View' && card.label !== 'No Object Detected' && (
               <a
                 href={card.wikiUrl}
                 target="_blank"

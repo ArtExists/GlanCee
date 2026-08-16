@@ -24,6 +24,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Shared high-performance HTTP connection pool
+http_client = httpx.AsyncClient(
+    timeout=20.0,
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+)
+
 def get_anthropic_key() -> str:
     return os.getenv("ANTHROPIC_API_KEY") or os.getenv("VITE_ANTHROPIC_API_KEY") or ""
 
@@ -157,76 +163,93 @@ async def identify_object(req: IdentifyRequest):
     """
     High-Precision Vision-Language Model Object Identification.
     Predicts general object CLASS / CATEGORY (e.g. Mobile Phone, Laptop, Wristwatch)
-    unless the user explicitly requests brand/model in their query.
+    or explicitly detects when NO object is present in the hand/frame.
     """
     raw_b64 = re.sub(r"^data:image\/[a-z]+;base64,", "", req.image_base64)
     mode_context = (
-        "The user is holding this object in their hand. Identify the object held in the foreground."
+        "The user is holding an object in their hand. Check if there is an object held in the foreground."
         if req.mode == "HOLDING"
-        else "The user has framed this object with their fingers. Identify what is inside the framed region."
+        else "The user has framed an object with their fingers. Check what is inside the framed region."
     )
 
     system_prompt = (
-        f"You are the visual cortex for high-end AR Smart Glasses. {mode_context}\n\n"
+        f"You are the visual cortex for AR Smart Glasses. The camera is pointing at the user's hand or framed field of view.\n\n"
         "RECOGNITION RULES:\n"
-        "1. CLASS / CATEGORY LEVEL PREDICTION (DEFAULT):\n"
-        "   - Identify the general object CLASS / CATEGORY name, NOT specific brand names, manufacturers, or product model numbers.\n"
-        "   - Example: Say 'Mobile Phone' (or 'Smartphone') — DO NOT say 'iPhone 15 Pro' or 'Samsung Galaxy'.\n"
-        "   - Example: Say 'Laptop' — DO NOT say 'MacBook Pro' or 'ThinkPad'.\n"
-        "   - Example: Say 'Wristwatch' — DO NOT say 'Rolex Submariner' or 'Apple Watch'.\n"
-        "   - Example: Say 'Coffee Mug' — DO NOT say brand names.\n"
-        "   - Example: Say 'Computer Mouse' — DO NOT say 'Logitech MX Master'.\n"
-        "   - Example: Say 'Houseplant' or 'Plant' — DO NOT say specific obscure cultivar names unless asked.\n"
-        "   - Example: Say 'Headphones' — DO NOT say 'Sony WH-1000XM5'.\n"
-        "   - Example: Say 'Water Bottle' — DO NOT say 'Hydro Flask'.\n\n"
-        "2. EXCEPTION (USER SPECIFIED QUERY):\n"
+        "1. EMPTY HAND / NO OBJECT DETECTION (CRITICAL - HIGHEST PRIORITY):\n"
+        "   - Check if the user is holding an actual physical item (like a phone, cup, pen, bottle, watch, notebook, tool).\n"
+        "   - If the hand is EMPTY, bare, open palm, only showing skin/fingers, or if the view is just a background, blank wall, desk, or room:\n"
+        "     You MUST return: {\"has_object\": false, \"label\": \"No Object Detected\", \"confidence\": \"high\", \"search_query\": \"\"}\n"
+        "   - DO NOT hallucinate or assume an object is present. DO NOT say 'Mobile Phone' or 'Smartphone' for an empty hand!\n\n"
+        "2. CLASS / CATEGORY LEVEL PREDICTION (ONLY WHEN AN OBJECT IS CLEARLY HELD):\n"
+        "   - If and only if a distinct physical item IS clearly held in the fingers/palm, identify its general class name.\n"
+        "   - Use generic category names: 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Pen', 'Water Bottle', 'Book', 'Computer Mouse', 'Houseplant', 'Eyeglasses', etc.\n"
+        "   - DO NOT provide specific brand or model names unless the user query explicitly asks for brand/model.\n\n"
+        "3. EXCEPTION (USER SPECIFIED QUERY):\n"
         "   - ONLY provide the exact brand, model, or fine-grained name IF the user query explicitly asks for it (e.g. 'What brand is this?', 'What exact model is this?').\n\n"
-        "3. CONFIDENCE METRIC:\n"
-        "   - When the object class is clearly visible and identifiable, always return confidence: 'high'.\n\n"
-        "4. SEARCH QUERY:\n"
-        "   - Provide the clean, standard Wikipedia article title for this object class (e.g. 'Mobile phone', 'Laptop', 'Watch', 'Houseplant', 'Headphones').\n\n"
+        "4. CONFIDENCE METRIC:\n"
+        "   - Return confidence: 'high' for clear determinations.\n\n"
         "Respond STRICTLY in valid JSON with no markdown formatting:\n"
         "{\n"
-        '  "label": "General class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug, Plant)",\n'
+        '  "has_object": true,\n'
+        '  "label": "General class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug) OR \'No Object Detected\'",\n'
         '  "confidence": "high",\n'
-        '  "search_query": "Standard Wikipedia article title for this class"\n'
+        '  "search_query": "Standard Wikipedia article title (or empty string if no object)"\n'
         "}"
     )
+
+    def format_vlm_output(parsed: dict, provider: str) -> dict:
+        label = parsed.get("label", "").strip()
+        has_object = parsed.get("has_object", True)
+
+        # Check for no-object keywords
+        no_obj_keywords = ["no object", "empty hand", "none", "nothing", "no item", "empty frame", "empty palm", "background only", "bare hand", "empty"]
+        if not label or any(k in label.lower() for k in no_obj_keywords) or has_object is False:
+            result = {
+                "has_object": False,
+                "label": "No Object Detected",
+                "confidence": "high",
+                "search_query": "",
+                "provider": provider,
+            }
+        else:
+            result = {
+                "has_object": True,
+                "label": label,
+                "confidence": parsed.get("confidence", "high") or "high",
+                "search_query": parsed.get("search_query", label) or label,
+                "provider": provider,
+            }
+        print(f"[VLM IDENTIFY - {provider}] -> has_object={result['has_object']}, label='{result['label']}'")
+        return result
 
     # 1. Mistral AI Pixtral (Pixtral 12B / Pixtral Large) - Primary Model
     mistral_key = get_mistral_key()
     if mistral_key:
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(
-                    "https://api.mistral.ai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "pixtral-12b-2409",
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": req.user_query or "Identify this object class."},
-                                    {"type": "image_url", "image_url": f"data:image/jpeg;base64,{raw_b64}"},
-                                ],
-                            },
-                        ],
-                    },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["choices"][0]["message"]["content"]
-                    parsed = json.loads(raw_text)
-                    return {
-                        "label": parsed.get("label", "Identified Object"),
-                        "confidence": parsed.get("confidence", "high") or "high",
-                        "search_query": parsed.get("search_query", parsed.get("label", "Object")),
-                        "provider": "Mistral Pixtral 12B",
-                    }
-                else:
-                    print(f"Mistral Pixtral status error: {res.status_code} {res.text}")
+            res = await http_client.post(
+                "https://api.mistral.ai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "pixtral-12b-2409",
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": req.user_query or "Identify the object held in hand or detect if the hand is empty."},
+                                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{raw_b64}"},
+                            ],
+                        },
+                    ],
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(raw_text)
+                return format_vlm_output(parsed, "Mistral Pixtral 12B")
+            else:
+                print(f"Mistral Pixtral status error: {res.status_code} {res.text}")
         except Exception as e:
             print(f"Mistral Pixtral identification error: {e}")
 
@@ -234,49 +257,43 @@ async def identify_object(req: IdentifyRequest):
     anthropic_key = get_anthropic_key()
     if anthropic_key:
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": anthropic_key,
-                        "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "claude-3-5-sonnet-20241022",
-                        "max_tokens": 300,
-                        "system": system_prompt,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": "image/jpeg",
-                                            "data": raw_b64,
-                                        },
+            res = await http_client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "claude-3-5-sonnet-20241022",
+                    "max_tokens": 300,
+                    "system": system_prompt,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": raw_b64,
                                     },
-                                    {
-                                        "type": "text",
-                                        "text": req.user_query or "Identify this object accurately.",
-                                    },
-                                ],
-                            }
-                        ],
-                    },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["content"][0]["text"]
-                    clean = re.sub(r"```json|```", "", raw_text).strip()
-                    parsed = json.loads(clean)
-                    return {
-                        "label": parsed.get("label", "Identified Object"),
-                        "confidence": parsed.get("confidence", "high"),
-                        "search_query": parsed.get("search_query", parsed.get("label", "Object")),
-                        "provider": "Claude 3.5 Sonnet",
-                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": req.user_query or "Identify the object held in hand or detect if the hand is empty.",
+                                },
+                            ],
+                        }
+                    ],
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json()["content"][0]["text"]
+                clean = re.sub(r"```json|```", "", raw_text).strip()
+                parsed = json.loads(clean)
+                return format_vlm_output(parsed, "Claude 3.5 Sonnet")
         except Exception as e:
             print(f"Anthropic identification error: {e}")
 
@@ -285,34 +302,28 @@ async def identify_object(req: IdentifyRequest):
     if gemini_key:
         try:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.post(
-                    endpoint,
-                    json={
-                        "contents": [
-                            {
-                                "parts": [
-                                    {"text": system_prompt + "\n" + (req.user_query or "Identify this.")},
-                                    {"inline_data": {"mime_type": "image/jpeg", "data": raw_b64}},
-                                ]
-                            }
-                        ],
-                        "generationConfig": {
-                            "response_mime_type": "application/json",
-                            "temperature": 0.1,
-                        },
+            res = await http_client.post(
+                endpoint,
+                json={
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": system_prompt + "\n" + (req.user_query or "Identify object or detect empty hand.")},
+                                {"inline_data": {"mime_type": "image/jpeg", "data": raw_b64}},
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "response_mime_type": "application/json",
+                        "temperature": 0.1,
                     },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    clean = re.sub(r"```json|```", "", raw_text).strip()
-                    parsed = json.loads(clean)
-                    return {
-                        "label": parsed.get("label", "Identified Object"),
-                        "confidence": parsed.get("confidence", "high"),
-                        "search_query": parsed.get("search_query", parsed.get("label", "Object")),
-                        "provider": "Gemini Flash",
-                    }
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                clean = re.sub(r"```json|```", "", raw_text).strip()
+                parsed = json.loads(clean)
+                return format_vlm_output(parsed, "Gemini Flash")
         except Exception as e:
             print(f"Gemini identification error: {e}")
 
@@ -320,34 +331,28 @@ async def identify_object(req: IdentifyRequest):
     openai_key = get_openai_key()
     if openai_key:
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "gpt-4o",
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": req.user_query or "Identify this."},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
-                                ],
-                            },
-                        ],
-                    },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["choices"][0]["message"]["content"]
-                    parsed = json.loads(raw_text)
-                    return {
-                        "label": parsed.get("label", "Identified Object"),
-                        "confidence": parsed.get("confidence", "high"),
-                        "search_query": parsed.get("search_query", parsed.get("label", "Object")),
-                        "provider": "GPT-4o",
-                    }
+            res = await http_client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o",
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": req.user_query or "Identify object or detect empty hand."},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
+                            ],
+                        },
+                    ],
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(raw_text)
+                return format_vlm_output(parsed, "GPT-4o")
         except Exception as e:
             print(f"OpenAI GPT-4o identification error: {e}")
 
@@ -355,43 +360,47 @@ async def identify_object(req: IdentifyRequest):
     groq_key = get_groq_key()
     if groq_key:
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "llama-3.2-90b-vision-preview",
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": req.user_query or "Identify this object class."},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
-                                ],
-                            },
-                        ],
-                    },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["choices"][0]["message"]["content"]
-                    parsed = json.loads(raw_text)
-                    return {
-                        "label": parsed.get("label", "Identified Object"),
-                        "confidence": parsed.get("confidence", "high") or "high",
-                        "search_query": parsed.get("search_query", parsed.get("label", "Object")),
-                        "provider": "Groq Llama 3.2 Vision",
-                    }
+            res = await http_client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.2-90b-vision-preview",
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": req.user_query or "Identify this object class or detect empty hand."},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
+                            ],
+                        },
+                    ],
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(raw_text)
+                return format_vlm_output(parsed, "Groq Llama 3.2 Vision")
         except Exception as e:
             print(f"Groq Vision identification error: {e}")
 
-    # Fallback response if no cloud VLM keys are provided
-    fallback_label = "Mobile Phone" if req.mode == "HOLDING" else "Laptop"
+    # Fallback response: if no cloud API keys are available or image is not recognized
+    # If user provided a query like 'phone' or 'laptop', honor it, otherwise detect no object
+    if req.user_query:
+        q = req.user_query.lower()
+        if "phone" in q or "mobile" in q:
+            return {"has_object": True, "label": "Mobile Phone", "confidence": "high", "search_query": "Mobile phone", "provider": "Smart Knowledge"}
+        if "laptop" in q or "computer" in q:
+            return {"has_object": True, "label": "Laptop", "confidence": "high", "search_query": "Laptop", "provider": "Smart Knowledge"}
+        if "watch" in q:
+            return {"has_object": True, "label": "Wristwatch", "confidence": "high", "search_query": "Watch", "provider": "Smart Knowledge"}
+
     return {
-        "label": fallback_label,
+        "has_object": False,
+        "label": "No Object Detected",
         "confidence": "high",
-        "search_query": fallback_label,
+        "search_query": "",
         "provider": "Smart Vision Fallback",
     }
 

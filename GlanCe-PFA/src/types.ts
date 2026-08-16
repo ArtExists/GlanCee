@@ -24,6 +24,7 @@ export interface VLMIdentificationResult {
   label: string;
   confidence: ConfidenceLevel;
   search_query: string;
+  hasObject?: boolean;
   provider?: string;
 }
 

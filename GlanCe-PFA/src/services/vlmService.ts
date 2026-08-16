@@ -107,10 +107,12 @@ export class VLMService {
       if (res.ok) {
         const data = await res.json();
         if (data.label && data.label !== 'Identified Object') {
+          const isNoObj = data.has_object === false || data.label.toLowerCase().includes('no object');
           return {
-            label: data.label,
+            hasObject: !isNoObj,
+            label: isNoObj ? 'No Object Detected' : data.label,
             confidence: data.confidence || 'high',
-            search_query: data.search_query || data.label,
+            search_query: isNoObj ? '' : (data.search_query || data.label),
             provider: data.provider || 'Backend VLM',
           };
         }
@@ -176,6 +178,14 @@ export class VLMService {
     label: string,
     wikiSummary: WikipediaSummary
   ): Promise<{ shortAnswer: string; expandedText: string }> {
+    // If no object was detected, return a brief clear response
+    if (label.toLowerCase().includes('no object') || !wikiSummary.extract) {
+      return {
+        shortAnswer: 'No distinct object was detected in your hand or framed view.',
+        expandedText: 'Please place or hold an object clearly in view of the camera to identify it.',
+      };
+    }
+
     // 1. Mistral AI Calm Narrator Generation
     if (this.mistralApiKey && this.mistralApiKey.trim() !== '') {
       try {
@@ -281,29 +291,52 @@ Respond in strict JSON:
     };
   }
 
+  private parseClientVLMResult(parsed: any, provider: string): VLMIdentificationResult {
+    const rawLabel = (parsed.label || '').trim();
+    const noObjKeywords = [
+      'no object',
+      'empty hand',
+      'none',
+      'nothing',
+      'no item',
+      'empty frame',
+      'empty palm',
+      'background only',
+      'bare hand',
+      'empty',
+      'hand only',
+      'no subject',
+    ];
+    const isNoObj = !rawLabel || parsed.has_object === false || noObjKeywords.some((k) => rawLabel.toLowerCase().includes(k));
+
+    return {
+      hasObject: !isNoObj,
+      label: isNoObj ? 'No Object Detected' : rawLabel,
+      confidence: 'high',
+      search_query: isNoObj ? '' : (parsed.search_query || rawLabel || 'Object'),
+      provider: provider,
+    };
+  }
+
   // --- Direct Anthropic Claude Call ---
   private async callAnthropicClaudeDirect(
     imageBase64: string,
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const modeContext =
-      mode === 'HOLDING'
-        ? 'The user is holding this object in their hand.'
-        : 'The user is framing this object with their fingers.';
 
-    const systemPrompt = `You are the visual cortex for AR Smart Glasses. ${modeContext}
+    const systemPrompt = `You are the visual cortex for AR Smart Glasses. The camera is viewing the user's hand or field of view.
 
 RECOGNITION RULES:
-1. Predict general object CLASS / CATEGORY (e.g., 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Plant', 'Headphones', 'Water Bottle').
-2. DO NOT output brand names or exact model numbers (say 'Mobile Phone' NOT 'iPhone 15' or 'Samsung Galaxy') UNLESS the user explicitly asks for the brand/model in their query.
-3. Always return confidence: "high" when clearly identified.
-4. Return Wikipedia search_query matching the clean object class.
+1. EMPTY HAND / NO OBJECT: Check if the user is holding an actual physical item. If the hand is EMPTY, bare, open palm, or background only: return { "has_object": false, "label": "No Object Detected", "search_query": "" }. DO NOT guess a phone if hand is empty.
+2. CLASS LEVEL: If an object is present, identify generic class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug, Plant).
+3. Return confidence: "high".
 
 Return strictly valid JSON:
 {
-  "label": "General object class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug, Plant)",
+  "has_object": true,
+  "label": "General object class name OR 'No Object Detected'",
   "confidence": "high",
   "search_query": "Standard Wikipedia article title"
 }`;
@@ -334,7 +367,7 @@ Return strictly valid JSON:
               },
               {
                 type: 'text',
-                text: hintQuery || 'Identify this object class.',
+                text: hintQuery || 'Identify object held in hand or detect empty hand.',
               },
             ],
           },
@@ -347,31 +380,24 @@ Return strictly valid JSON:
     const raw = data.content?.[0]?.text || '';
     const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
 
-    return {
-      label: parsed.label || 'Identified Object',
-      confidence: parsed.confidence || 'high',
-      search_query: parsed.search_query || parsed.label || 'Object',
-      provider: 'Claude 3.5 Sonnet',
-    };
+    return this.parseClientVLMResult(parsed, 'Claude 3.5 Sonnet');
   }
 
   // --- Direct Mistral Pixtral Call ---
   private async callMistralPixtralDirect(
     imageBase64: string,
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
     const rawB64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const modeContext = mode === 'HOLDING' ? 'held in hand' : 'framed with fingers';
 
-    const systemPrompt = `You are AR Smart Glasses visual cortex. Identify the main object ${modeContext}.
+    const systemPrompt = `You are AR Smart Glasses visual cortex. Look at the hand/scene.
 RULES:
-1. Predict general object CLASS / CATEGORY (e.g. 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Plant').
-2. DO NOT output brand names or models (e.g. say 'Mobile Phone' NOT 'iPhone' or 'Samsung') unless specifically asked in the user query.
+1. EMPTY HAND / NO OBJECT: If the hand is empty or bare, or no distinct item is held, return { "has_object": false, "label": "No Object Detected", "confidence": "high", "search_query": "" }
+2. CLASS LEVEL: If an object is held, predict general class (Mobile Phone, Laptop, Wristwatch, Coffee Mug, Plant).
 3. Return confidence: "high".
-4. Return Wikipedia search_query matching the clean object class.
 
-Return strictly valid JSON: { "label": string, "confidence": "high", "search_query": string }`;
+Return strictly valid JSON.`;
 
     const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
       method: 'POST',
@@ -390,7 +416,7 @@ Return strictly valid JSON: { "label": string, "confidence": "high", "search_que
           {
             role: 'user',
             content: [
-              { type: 'text', text: hintQuery || 'Identify this object class.' },
+              { type: 'text', text: hintQuery || 'Identify object in hand or detect empty hand.' },
               { type: 'image_url', image_url: `data:image/jpeg;base64,${rawB64}` },
             ],
           },
@@ -402,33 +428,27 @@ Return strictly valid JSON: { "label": string, "confidence": "high", "search_que
     const data = await response.json();
     const parsed = JSON.parse(data.choices[0].message.content);
 
-    return {
-      label: parsed.label || 'Identified Object',
-      confidence: parsed.confidence || 'high',
-      search_query: parsed.search_query || parsed.label || 'Object',
-      provider: 'Mistral Pixtral 12B',
-    };
+    return this.parseClientVLMResult(parsed, 'Mistral Pixtral 12B');
   }
 
   // --- Direct Gemini Call ---
   private async callGeminiDirect(
     imageBase64: string,
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const modeContext = mode === 'HOLDING' ? 'held in hand' : 'framed with fingers';
 
-    const prompt = `You are AR Smart Glasses visual AI. Identify the main object ${modeContext}.
+    const prompt = `You are AR Smart Glasses visual AI.
 RULES:
-1. Predict general object CLASS / CATEGORY (e.g., 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Plant').
-2. DO NOT output brand names or models (say 'Mobile Phone' NOT 'iPhone' or 'Samsung') unless specifically asked in the user query.
+1. NO OBJECT: If hand is empty, return "has_object": false, "label": "No Object Detected", "search_query": "".
+2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
 3. Return confidence: "high".
-4. Return Wikipedia search_query matching the clean object class.
 
 Return strictly valid JSON:
 {
-  "label": "General class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug, Plant)",
+  "has_object": true,
+  "label": "General class name OR 'No Object Detected'",
   "confidence": "high",
   "search_query": "Standard Wikipedia article title"
 }`;
@@ -442,7 +462,7 @@ Return strictly valid JSON:
         contents: [
           {
             parts: [
-              { text: prompt + '\n' + (hintQuery || 'Identify this object class.') },
+              { text: prompt + '\n' + (hintQuery || 'Identify object or detect empty hand.') },
               { inline_data: { mime_type: 'image/jpeg', data: base64Data } },
             ]
           }
@@ -459,31 +479,22 @@ Return strictly valid JSON:
     const raw = data.candidates?.[0]?.content?.parts?.[0]?.text;
     const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
 
-    return {
-      label: parsed.label || 'Detected Object',
-      confidence: parsed.confidence || 'high',
-      search_query: parsed.search_query || parsed.label || 'Object',
-      provider: 'Gemini 1.5 Flash',
-    };
+    return this.parseClientVLMResult(parsed, 'Gemini 1.5 Flash');
   }
 
   // --- Direct OpenAI Call ---
   private async callOpenAIDirect(
     imageBase64: string,
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const modeContext = mode === 'HOLDING' ? 'held in hand' : 'framed with fingers';
 
-    const systemPrompt = `You are AR Smart Glasses visual AI. Identify the main object ${modeContext}.
+    const systemPrompt = `You are AR Smart Glasses visual AI.
 RULES:
-1. Predict general object CLASS / CATEGORY (e.g., 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Plant').
-2. DO NOT output brand names or models (say 'Mobile Phone' NOT 'iPhone' or 'Samsung') unless specifically asked in the user query.
-3. Return confidence: "high".
-4. Return Wikipedia search_query matching the clean object class.
-
-Return JSON with label, confidence, and search_query for Wikipedia.`;
+1. NO OBJECT: If hand is empty or no item is held, return { "has_object": false, "label": "No Object Detected", "confidence": "high", "search_query": "" }
+2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
+3. Return confidence: "high".`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -502,7 +513,7 @@ Return JSON with label, confidence, and search_query for Wikipedia.`;
           {
             role: 'user',
             content: [
-              { type: 'text', text: hintQuery || 'Identify this object class.' },
+              { type: 'text', text: hintQuery || 'Identify object or detect empty hand.' },
               { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Data}` } },
             ],
           },
@@ -514,31 +525,22 @@ Return JSON with label, confidence, and search_query for Wikipedia.`;
     const data = await response.json();
     const parsed = JSON.parse(data.choices[0].message.content);
 
-    return {
-      label: parsed.label || 'Identified Object',
-      confidence: parsed.confidence || 'high',
-      search_query: parsed.search_query || parsed.label || 'Object',
-      provider: 'GPT-4o',
-    };
+    return this.parseClientVLMResult(parsed, 'GPT-4o');
   }
 
   // --- Direct Groq Vision Call ---
   private async callGroqVisionDirect(
     imageBase64: string,
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
-    const modeContext = mode === 'HOLDING' ? 'held in hand' : 'framed with fingers';
 
-    const systemPrompt = `You are AR Smart Glasses visual AI. Identify the main object ${modeContext}.
+    const systemPrompt = `You are AR Smart Glasses visual AI.
 RULES:
-1. Predict general object CLASS / CATEGORY (e.g., 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Plant').
-2. DO NOT output brand names or models (say 'Mobile Phone' NOT 'iPhone' or 'Samsung') unless specifically asked in the user query.
-3. Return confidence: "high".
-4. Return Wikipedia search_query matching the clean object class.
-
-Return JSON with label, confidence, and search_query for Wikipedia.`;
+1. NO OBJECT: If hand is empty or no item is held, return { "has_object": false, "label": "No Object Detected", "confidence": "high", "search_query": "" }
+2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
+3. Return confidence: "high".`;
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -557,7 +559,7 @@ Return JSON with label, confidence, and search_query for Wikipedia.`;
           {
             role: 'user',
             content: [
-              { type: 'text', text: hintQuery || 'Identify this object class.' },
+              { type: 'text', text: hintQuery || 'Identify this object class or detect empty hand.' },
               { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Data}` } },
             ],
           },
@@ -569,29 +571,27 @@ Return JSON with label, confidence, and search_query for Wikipedia.`;
     const data = await response.json();
     const parsed = JSON.parse(data.choices[0].message.content);
 
-    return {
-      label: parsed.label || 'Identified Object',
-      confidence: parsed.confidence || 'high',
-      search_query: parsed.search_query || parsed.label || 'Object',
-      provider: 'Groq Llama 3.2 Vision',
-    };
+    return this.parseClientVLMResult(parsed, 'Groq Llama 3.2 Vision');
   }
 
   private runSmartFallbackIdentification(
-    mode: 'HOLDING' | 'LOOKING_AT',
+    _mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): VLMIdentificationResult {
     const catalog: VLMIdentificationResult[] = [
-      { label: 'Mobile Phone', confidence: 'high', search_query: 'Mobile phone', provider: 'Smart Knowledge' },
-      { label: 'Laptop', confidence: 'high', search_query: 'Laptop', provider: 'Smart Knowledge' },
-      { label: 'Wristwatch', confidence: 'high', search_query: 'Watch', provider: 'Smart Knowledge' },
-      { label: 'Houseplant', confidence: 'high', search_query: 'Houseplant', provider: 'Smart Knowledge' },
-      { label: 'Coffee Mug', confidence: 'high', search_query: 'Coffee cup', provider: 'Smart Knowledge' },
-      { label: 'Headphones', confidence: 'high', search_query: 'Headphones', provider: 'Smart Knowledge' },
-      { label: 'Water Bottle', confidence: 'high', search_query: 'Water bottle', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Mobile Phone', confidence: 'high', search_query: 'Mobile phone', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Laptop', confidence: 'high', search_query: 'Laptop', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Wristwatch', confidence: 'high', search_query: 'Watch', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Houseplant', confidence: 'high', search_query: 'Houseplant', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Coffee Mug', confidence: 'high', search_query: 'Coffee cup', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Headphones', confidence: 'high', search_query: 'Headphones', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Water Bottle', confidence: 'high', search_query: 'Water bottle', provider: 'Smart Knowledge' },
     ];
 
     if (hintQuery) {
+      if (hintQuery.toLowerCase().includes('no object') || hintQuery.toLowerCase().includes('empty')) {
+        return { hasObject: false, label: 'No Object Detected', confidence: 'high', search_query: '', provider: 'Smart Knowledge' };
+      }
       const match = catalog.find(
         (item) =>
           item.label.toLowerCase().includes(hintQuery.toLowerCase()) ||
@@ -600,7 +600,13 @@ Return JSON with label, confidence, and search_query for Wikipedia.`;
       if (match) return match;
     }
 
-    return mode === 'HOLDING' ? catalog[0] : catalog[1];
+    return {
+      hasObject: false,
+      label: 'No Object Detected',
+      confidence: 'high',
+      search_query: '',
+      provider: 'Smart Knowledge Fallback',
+    };
   }
 }
 

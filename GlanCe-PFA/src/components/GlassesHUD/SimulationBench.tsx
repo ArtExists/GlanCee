@@ -97,6 +97,28 @@ export const PRESET_SCENARIOS: SimulationPreset[] = [
     },
     fallbackShortAnswer: 'A houseplant cultivated in an indoor setting. Indoor plants provide aesthetic ambiance and naturally contribute to ambient humidity and air quality.',
   },
+  {
+    id: 'empty_hand',
+    title: 'Empty Hand (No Object)',
+    mode: 'HOLDING',
+    imageUrl: 'https://images.unsplash.com/photo-1544816155-12df9643f363?w=1000&auto=format&fit=crop&q=80',
+    defaultBox: { x: 0.3, y: 0.25, width: 0.4, height: 0.5 },
+    fallbackIdentification: {
+      hasObject: false,
+      label: 'No Object Detected',
+      confidence: 'high',
+      search_query: '',
+      provider: 'Smart Knowledge',
+    },
+    fallbackWiki: {
+      title: 'Empty View',
+      extract: 'No object was detected in your hand or framed view.',
+      description: 'Empty view',
+      thumbnailUrl: '',
+      contentUrl: 'https://en.wikipedia.org/wiki/Computer_vision',
+    },
+    fallbackShortAnswer: 'No distinct object was detected in your hand or framed view. Place an object in view.',
+  },
 ];
 
 export const SimulationBench: React.FC<SimulationBenchProps> = ({

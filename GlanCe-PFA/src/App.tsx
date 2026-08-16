@@ -55,6 +55,7 @@ export const App: React.FC = () => {
 
   const lastBoxRef = useRef<BoundingBox>({ x: 0.25, y: 0.25, width: 0.5, height: 0.5 });
   const pipelineLockRef = useRef<boolean>(false);
+  const activePipelineIdRef = useRef<number>(0);
 
   // Sync API Keys to VLM & Speech Services
   useEffect(() => {
@@ -80,6 +81,7 @@ export const App: React.FC = () => {
         return;
       }
       pipelineLockRef.current = true;
+      const pipelineId = ++activePipelineIdRef.current;
       setIsProcessing(true);
 
       try {
@@ -90,9 +92,48 @@ export const App: React.FC = () => {
 
         // 2. Identify object class via High-Precision VLM (Backend / Cloud / Fallback)
         const idResult = await vlmService.identifyObject(cropBase64, mode, customHint);
+        if (activePipelineIdRef.current !== pipelineId) return;
+
+        // Check if no object was detected
+        if (idResult.hasObject === false || idResult.label.toLowerCase().includes('no object')) {
+          const noObjCard: IdentifiedCard = {
+            id: 'card-' + Date.now(),
+            timestamp: Date.now(),
+            label: 'No Object Detected',
+            confidence: 'high',
+            shortAnswer: 'No object was detected in your hand or framed view.',
+            expandedText: 'Please place or hold an object clearly in view of the camera to identify it.',
+            wikiTitle: 'Empty View',
+            wikiUrl: 'https://en.wikipedia.org/wiki/Computer_vision',
+            box: { ...box },
+            croppedThumbnailUrl: cropBase64,
+            mode: mode,
+            provider: idResult.provider || 'Smart Vision',
+          };
+
+          if (activePipelineIdRef.current !== pipelineId) return;
+          setCards((prev) => [noObjCard, ...prev.slice(0, 4)]);
+          audioFX.playPinchTrigger();
+
+          if (settings.autoSpeak) {
+            setSpeakingCardId(noObjCard.id);
+            speechService.speak('No object detected.', () => {
+              setSpeakingCardId(null);
+              setTimeout(() => {
+                setCards((prev) => prev.filter((c) => c.id !== noObjCard.id));
+              }, 1200);
+            });
+          } else {
+            setTimeout(() => {
+              setCards((prev) => prev.filter((c) => c.id !== noObjCard.id));
+            }, 2500);
+          }
+          return;
+        }
 
         // 3. Grounding via Wikipedia REST API
         const wikiSummary = await wikipediaService.fetchArticleSummary(idResult.search_query);
+        if (activePipelineIdRef.current !== pipelineId) return;
 
         // 4. Generate calm narrator answer
         const narratorAnswers = await vlmService.generateCalmNarratorAnswer(
@@ -103,6 +144,7 @@ export const App: React.FC = () => {
             contentUrl: `https://en.wikipedia.org/wiki/${encodeURIComponent(idResult.search_query)}`,
           }
         );
+        if (activePipelineIdRef.current !== pipelineId) return;
 
         // 5. Create new popup card (High Confidence)
         const newCard: IdentifiedCard = {
@@ -125,12 +167,21 @@ export const App: React.FC = () => {
         setCards((prev) => [newCard, ...prev.slice(0, 4)]);
         audioFX.playCardReveal();
 
-        // 6. Speak aloud via Calm Narrator if enabled
+        // 6. Speak aloud via Calm Narrator if enabled, and auto-dismiss when description is over
         if (settings.autoSpeak) {
           setSpeakingCardId(newCard.id);
           speechService.speak(narratorAnswers.shortAnswer, () => {
             setSpeakingCardId(null);
+            // Gracefully dismiss popup card 1.5s after description finishes
+            setTimeout(() => {
+              setCards((prev) => prev.filter((c) => c.id !== newCard.id));
+            }, 1500);
           });
+        } else {
+          // If autoSpeak is disabled, auto-dismiss after reading timeout
+          setTimeout(() => {
+            setCards((prev) => prev.filter((c) => c.id !== newCard.id));
+          }, 6000);
         }
       } catch (error) {
         console.error('Identification pipeline error:', error);
@@ -173,9 +224,11 @@ export const App: React.FC = () => {
   const handleVoiceCommand = useCallback(
     (action: VoiceCommandAction, fullQuery?: string) => {
       if (action === 'STOP') {
-        // Immediate STOP: cut off speech and cancel active tasks
+        // Immediate STOP: invalidate any active in-flight pipeline, stop voice, and clear all cards
+        activePipelineIdRef.current = 0;
         speechService.stopSpeaking();
         setSpeakingCardId(null);
+        setCards([]);
         pipelineLockRef.current = false;
         setIsProcessing(false);
         audioFX.playPinchTrigger();
@@ -205,6 +258,9 @@ export const App: React.FC = () => {
           audioFX.playVoiceTriggerSound();
           speechService.speak(topCard.expandedText, () => {
             setSpeakingCardId(null);
+            setTimeout(() => {
+              setCards((prev) => prev.filter((c) => c.id !== topCard.id));
+            }, 2000);
           });
         }
         return;
@@ -251,12 +307,16 @@ export const App: React.FC = () => {
     setSpeakingCardId(card.id);
     speechService.speak(card.shortAnswer, () => {
       setSpeakingCardId(null);
+      setTimeout(() => {
+        setCards((prev) => prev.filter((c) => c.id !== card.id));
+      }, 1500);
     });
   };
 
   const handleStopVoice = () => {
     speechService.stopSpeaking();
     setSpeakingCardId(null);
+    setCards([]);
   };
 
   const handleDismissCard = (id: string) => {

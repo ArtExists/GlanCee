@@ -170,7 +170,7 @@ class SpeechService {
   /**
    * Evaluate spoken text for natural voice commands
    */
-  private evaluateCommand(transcript: string, isFinal: boolean) {
+  private evaluateCommand(transcript: string, _isFinal: boolean) {
     const raw = transcript.toLowerCase().trim();
     // Normalize contractions: what's -> what is, i'm -> i am, let's -> let us
     const normalized = raw
@@ -184,7 +184,7 @@ class SpeechService {
 
     const now = Date.now();
 
-    // 1. Immediate STOP commands (evaluated instantly on both interim and final results)
+    // 1. Immediate STOP commands (evaluated instantly on both interim and final results with ZERO debounce)
     const stopMatches = [
       'stop',
       'be quiet',
@@ -197,14 +197,21 @@ class SpeechService {
       'halt',
       'stop talking',
       'enough',
+      'stop it',
+      'abort',
+      'dismiss',
+      'shh',
     ];
 
-    if (stopMatches.some((s) => normalized.includes(s))) {
-      if (now - this.lastCommandTime > 800) {
-        this.lastCommandTime = now;
-        this.stopSpeaking();
-        this.callbacks.onCommandTriggered?.('STOP', transcript);
-      }
+    const words = normalized.split(/\s+/);
+    const hasStopWord =
+      stopMatches.some((s) => normalized.includes(s)) ||
+      words.some((w) => ['stop', 'quiet', 'mute', 'cancel', 'halt', 'abort', 'silence', 'shh'].includes(w));
+
+    if (hasStopWord) {
+      this.lastCommandTime = now;
+      this.stopSpeaking();
+      this.callbacks.onCommandTriggered?.('STOP', transcript);
       return;
     }
 
@@ -283,8 +290,8 @@ class SpeechService {
       normalized.startsWith('how ') ||
       normalized.startsWith('is this ');
 
-    if (hasIdentifyTrigger || (isFinal && isDirectQuestion)) {
-      if (now - this.lastCommandTime > 1500 || this.lastTriggeredText !== raw) {
+    if (hasIdentifyTrigger || isDirectQuestion) {
+      if (now - this.lastCommandTime > 500 && this.lastTriggeredText !== raw) {
         this.lastCommandTime = now;
         this.lastTriggeredText = raw;
         this.callbacks.onCommandTriggered?.('IDENTIFY', transcript);
