@@ -417,6 +417,16 @@ class SpeechService {
     }
   }
 
+  private extraDestinations: Set<AudioNode> = new Set();
+
+  public addDestination(node: AudioNode) {
+    this.extraDestinations.add(node);
+  }
+
+  public removeDestination(node: AudioNode) {
+    this.extraDestinations.delete(node);
+  }
+
   /**
    * Calm Narrator Voice Output
    */

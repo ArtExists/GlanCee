@@ -78,3 +78,15 @@ export interface SimulationPreset {
   fallbackWiki: WikipediaSummary;
   fallbackShortAnswer: string;
 }
+
+export type RecordingState = 'idle' | 'recording' | 'processing' | 'ready';
+
+export interface RecordedSession {
+  id: string;
+  blob: Blob;
+  url: string;
+  duration: number; // in seconds
+  size: number; // in bytes
+  timestamp: number;
+  mimeType: string;
+}

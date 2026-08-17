@@ -4,8 +4,9 @@
 class AudioFXService {
   private ctx: AudioContext | null = null;
   private isMuted: boolean = false;
+  private extraDestinations: Set<AudioNode> = new Set();
 
-  private initContext() {
+  public initContext(): AudioContext | null {
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
@@ -14,6 +15,35 @@ class AudioFXService {
     }
     if (this.ctx && this.ctx.state === 'suspended') {
       this.ctx.resume();
+    }
+    return this.ctx;
+  }
+
+  public getAudioContext(): AudioContext | null {
+    return this.initContext();
+  }
+
+  public addDestination(node: AudioNode) {
+    this.extraDestinations.add(node);
+  }
+
+  public removeDestination(node: AudioNode) {
+    this.extraDestinations.delete(node);
+  }
+
+  private connectToDestinations(node: AudioNode) {
+    if (!this.ctx) return;
+    try {
+      node.connect(this.ctx.destination);
+      for (const dest of this.extraDestinations) {
+        try {
+          node.connect(dest);
+        } catch {
+          // Ignore disconnected destination nodes
+        }
+      }
+    } catch {
+      // Ignore
     }
   }
 
@@ -42,7 +72,7 @@ class AudioFXService {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
 
       osc.connect(gain);
-      gain.connect(this.ctx.destination);
+      this.connectToDestinations(gain);
 
       osc.start(now);
       osc.stop(now + 0.22);
@@ -70,7 +100,7 @@ class AudioFXService {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
 
       osc.connect(gain);
-      gain.connect(this.ctx.destination);
+      this.connectToDestinations(gain);
 
       osc.start(now);
       osc.stop(now + 0.14);
@@ -106,7 +136,7 @@ class AudioFXService {
 
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.ctx.destination);
+      this.connectToDestinations(gain);
 
       osc.start(now);
       osc.stop(now + 0.45);
@@ -132,7 +162,7 @@ class AudioFXService {
       gain1.gain.setValueAtTime(0.1, now);
       gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
       osc1.connect(gain1);
-      gain1.connect(this.ctx.destination);
+      this.connectToDestinations(gain1);
       osc1.start(now);
       osc1.stop(now + 0.3);
 
@@ -144,7 +174,7 @@ class AudioFXService {
       gain2.gain.setValueAtTime(0.12, now + 0.08);
       gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
       osc2.connect(gain2);
-      gain2.connect(this.ctx.destination);
+      this.connectToDestinations(gain2);
       osc2.start(now + 0.08);
       osc2.stop(now + 0.4);
     } catch {
@@ -171,7 +201,7 @@ class AudioFXService {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
 
       osc.connect(gain);
-      gain.connect(this.ctx.destination);
+      this.connectToDestinations(gain);
 
       osc.start(now);
       osc.stop(now + 0.16);
@@ -203,7 +233,7 @@ class AudioFXService {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
 
       osc.connect(gain);
-      gain.connect(this.ctx.destination);
+      this.connectToDestinations(gain);
 
       osc.start(now);
       osc.stop(now + 0.09);

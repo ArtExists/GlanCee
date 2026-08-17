@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AppMode, AppSettings, BoundingBox, IdentifiedCard, SimulationPreset } from './types';
+import { AppMode, AppSettings, BoundingBox, IdentifiedCard, RecordedSession, SimulationPreset } from './types';
 import { TopBar } from './components/GlassesHUD/TopBar';
 import { ModeToggle } from './components/GlassesHUD/ModeToggle';
 import { CameraViewport } from './components/GlassesHUD/CameraViewport';
@@ -9,11 +9,14 @@ import { VoiceIndicator } from './components/GlassesHUD/VoiceIndicator';
 import { SettingsModal } from './components/GlassesHUD/SettingsModal';
 import { SimulationBench } from './components/GlassesHUD/SimulationBench';
 import { TutorialOverlay } from './components/GlassesHUD/TutorialOverlay';
+import { RecordingReadyCard } from './components/GlassesHUD/RecordingReadyCard';
 import { vlmService } from './services/vlmService';
 import { wikipediaService } from './services/wikipediaService';
 import { speechService, VoiceCommandAction } from './services/speechService';
 import { audioFX } from './services/audioEffects';
 import { GestureDetectionResult } from './services/gestureDetector';
+import { recordingService } from './services/recordingService';
+import { recordingStorage } from './services/recordingStorage';
 
 const DEFAULT_SETTINGS: AppSettings = {
   mistralApiKey: import.meta.env.VITE_MISTRAL_API_KEY || '',
@@ -42,6 +45,12 @@ export const App: React.FC = () => {
   const [currentDetection, setCurrentDetection] = useState<GestureDetectionResult | null>(null);
   const [simulationImage, setSimulationImage] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<'SETTINGS' | 'SIMULATION' | 'TUTORIAL' | null>(null);
+
+  // Recording State
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [cachedSession, setCachedSession] = useState<RecordedSession | null>(null);
+  const [isRecordingReadyOpen, setIsRecordingReadyOpen] = useState<boolean>(false);
 
   // Settings loaded from localStorage
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -358,6 +367,121 @@ export const App: React.FC = () => {
     }
   };
 
+  // Load cached session from IndexedDB on startup
+  useEffect(() => {
+    recordingStorage.getLatestRecording().then((session) => {
+      if (session) {
+        setCachedSession(session);
+      }
+    });
+  }, []);
+
+  // Synchronize state with off-screen recording compositor in real time
+  useEffect(() => {
+    if (isRecording) {
+      const source = simulationImage
+        ? (document.querySelector('img[alt="Simulation Scene"]') as HTMLImageElement | null)
+        : (document.querySelector('video') as HTMLVideoElement | null);
+
+      recordingService.updateCompositorState({
+        sourceElement: source,
+        mode,
+        facingMode: settings.cameraFacingMode,
+        showLandmarks: settings.showLandmarks,
+        currentDetection,
+        cards,
+        speakingCardId,
+        isProcessing,
+      });
+    }
+  }, [
+    isRecording,
+    mode,
+    settings.cameraFacingMode,
+    settings.showLandmarks,
+    currentDetection,
+    cards,
+    speakingCardId,
+    isProcessing,
+    simulationImage,
+  ]);
+
+  // Handle Record Start / Stop Toggle
+  const handleToggleRecording = useCallback(async () => {
+    if (isRecording) {
+      try {
+        const session = await recordingService.stopRecording();
+        setIsRecording(false);
+        setCachedSession(session);
+        setIsRecordingReadyOpen(true);
+        audioFX.playPinchTrigger();
+      } catch (err) {
+        console.warn('Failed to stop recording:', err);
+        setIsRecording(false);
+      }
+    } else {
+      try {
+        const source = simulationImage
+          ? (document.querySelector('img[alt="Simulation Scene"]') as HTMLImageElement | null)
+          : (document.querySelector('video') as HTMLVideoElement | null);
+
+        setCachedSession(null);
+        setIsRecordingReadyOpen(false);
+
+        await recordingService.startRecording(
+          {
+            sourceElement: source,
+            mode,
+            facingMode: settings.cameraFacingMode,
+            showLandmarks: settings.showLandmarks,
+            landmarks: [],
+            currentDetection,
+            cards,
+            speakingCardId,
+            isProcessing,
+          },
+          (secs) => setRecordingDuration(secs)
+        );
+
+        setIsRecording(true);
+        setRecordingDuration(0);
+        audioFX.playTargetLock();
+      } catch (err) {
+        console.warn('Failed to start recording:', err);
+        setIsRecording(false);
+      }
+    }
+  }, [
+    isRecording,
+    simulationImage,
+    mode,
+    settings.cameraFacingMode,
+    settings.showLandmarks,
+    currentDetection,
+    cards,
+    speakingCardId,
+    isProcessing,
+  ]);
+
+  // Handle Download Recording File (.webm)
+  const handleDownloadRecording = useCallback(() => {
+    if (!cachedSession) return;
+    const a = document.createElement('a');
+    a.href = cachedSession.url;
+    const timestamp = new Date(cachedSession.timestamp).toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.download = `glance-session-${timestamp}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [cachedSession]);
+
+  // Handle Discard Recording File (clears from IndexedDB)
+  const handleDiscardRecording = useCallback(async () => {
+    await recordingStorage.clearLatestRecording();
+    setCachedSession(null);
+    setIsRecordingReadyOpen(false);
+  }, []);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#03060c] font-sans">
       {/* 1. Full-screen Live Camera Feed / Simulation Background */}
@@ -383,6 +507,9 @@ export const App: React.FC = () => {
         isListening={isListening}
         isSpeaking={isSpeaking}
         isProcessing={isProcessing}
+        isRecording={isRecording}
+        recordingDuration={recordingDuration}
+        hasCachedRecording={!!cachedSession}
         onToggleMic={() => speechService.toggleListening()}
         onSwitchCamera={() =>
           setSettings((s) => ({
@@ -390,6 +517,8 @@ export const App: React.FC = () => {
             cameraFacingMode: s.cameraFacingMode === 'user' ? 'environment' : 'user',
           }))
         }
+        onToggleRecording={handleToggleRecording}
+        onOpenRecordingModal={() => setIsRecordingReadyOpen(true)}
         onOpenSettings={() => setActiveModal('SETTINGS')}
         onOpenSimulation={() => setActiveModal('SIMULATION')}
         onOpenTutorial={() => setActiveModal('TUTORIAL')}
@@ -460,8 +589,19 @@ export const App: React.FC = () => {
         isOpen={activeModal === 'TUTORIAL'}
         onClose={() => setActiveModal(null)}
       />
+
+      {/* Recording Ready / Download Card */}
+      {isRecordingReadyOpen && cachedSession && (
+        <RecordingReadyCard
+          session={cachedSession}
+          onDownload={handleDownloadRecording}
+          onDiscard={handleDiscardRecording}
+          onClose={() => setIsRecordingReadyOpen(false)}
+        />
+      )}
     </div>
   );
 };
 
 export default App;
+
