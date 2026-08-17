@@ -52,11 +52,19 @@ class IdentifyRequest(BaseModel):
     image_base64: str
     mode: str = "HOLDING"  # "HOLDING" or "LOOKING_AT"
     user_query: Optional[str] = None
+    mistral_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
 
 
 class GroundRequest(BaseModel):
     label: str
     search_query: str
+    mistral_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
 
 
 # --- Endpoints ---
@@ -100,23 +108,22 @@ async def get_config():
 
 
 @app.post("/api/transcribe")
-async def transcribe_audio(
-    file: UploadFile = File(...),
-    custom_key: Optional[str] = Form(None),
-):
+async def transcribe_audio(file: UploadFile = File(...)):
     """
-    Transcribes spoken audio using Whisper (OpenAI or Groq Whisper).
+    Sub-second Speech-to-Text via Groq Whisper or OpenAI Whisper API.
     """
+    groq_key = get_groq_key()
+    openai_key = get_openai_key()
+
     audio_bytes = await file.read()
     filename = file.filename or "audio.webm"
 
-    # Priority 1: Groq Whisper (ultra-fast sub-200ms transcription)
-    groq_key = custom_key if (custom_key and custom_key.startswith("gsk_")) else get_groq_key()
+    # 1. Try Groq Whisper (Ultra-fast ~150ms latency)
     if groq_key:
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 files = {"file": (filename, audio_bytes, file.content_type or "audio/webm")}
-                data = {"model": "whisper-large-v3", "language": "en"}
+                data = {"model": "whisper-large-v3", "language": "en", "response_format": "json"}
                 headers = {"Authorization": f"Bearer {groq_key}"}
 
                 res = await client.post(
@@ -131,11 +138,10 @@ async def transcribe_audio(
         except Exception as e:
             print(f"Groq Whisper transcription error: {e}")
 
-    # Priority 2: OpenAI Whisper
-    openai_key = custom_key if (custom_key and custom_key.startswith("sk-")) else get_openai_key()
+    # 2. Try OpenAI Whisper (whisper-1)
     if openai_key:
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 files = {"file": (filename, audio_bytes, file.content_type or "audio/webm")}
                 data = {"model": "whisper-1", "language": "en"}
                 headers = {"Authorization": f"Bearer {openai_key}"}
@@ -158,6 +164,21 @@ async def transcribe_audio(
     )
 
 
+def safe_parse_json(raw_text: str) -> dict:
+    """Safely extracts JSON from model text with code fence or partial wrapper removal."""
+    clean = re.sub(r"```json|```", "", raw_text).strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        match = re.search(r"\{[\s\S]*\}", clean)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+    return {"label": clean[:60].strip(), "has_object": True}
+
+
 @app.post("/api/identify")
 async def identify_object(req: IdentifyRequest):
     """
@@ -167,43 +188,87 @@ async def identify_object(req: IdentifyRequest):
     """
     raw_b64 = re.sub(r"^data:image\/[a-z]+;base64,", "", req.image_base64)
     mode_context = (
-        "The user is holding an object in their hand. Check if there is an object held in the foreground."
+        "The user is holding or presenting a physical object to the camera."
         if req.mode == "HOLDING"
-        else "The user has framed an object with their fingers. Check what is inside the framed region."
+        else "The user has framed an object or scene in their environment."
     )
 
     system_prompt = (
-        f"You are the visual cortex for AR Smart Glasses. The camera is pointing at the user's hand or framed field of view.\n\n"
-        "RECOGNITION RULES:\n"
-        "1. EMPTY HAND / NO OBJECT DETECTION (CRITICAL - HIGHEST PRIORITY):\n"
-        "   - Check if the user is holding an actual physical item (like a phone, cup, pen, bottle, watch, notebook, tool).\n"
-        "   - If the hand is EMPTY, bare, open palm, only showing skin/fingers, or if the view is just a background, blank wall, desk, or room:\n"
-        "     You MUST return: {\"has_object\": false, \"label\": \"No Object Detected\", \"confidence\": \"high\", \"search_query\": \"\"}\n"
-        "   - DO NOT hallucinate or assume an object is present. DO NOT say 'Mobile Phone' or 'Smartphone' for an empty hand!\n\n"
-        "2. CLASS / CATEGORY LEVEL PREDICTION (ONLY WHEN AN OBJECT IS CLEARLY HELD):\n"
-        "   - If and only if a distinct physical item IS clearly held in the fingers/palm, identify its general class name.\n"
-        "   - Use generic category names: 'Mobile Phone', 'Laptop', 'Wristwatch', 'Coffee Mug', 'Pen', 'Water Bottle', 'Book', 'Computer Mouse', 'Houseplant', 'Eyeglasses', etc.\n"
-        "   - DO NOT provide specific brand or model names unless the user query explicitly asks for brand/model.\n\n"
-        "3. EXCEPTION (USER SPECIFIED QUERY):\n"
-        "   - ONLY provide the exact brand, model, or fine-grained name IF the user query explicitly asks for it (e.g. 'What brand is this?', 'What exact model is this?').\n\n"
-        "4. CONFIDENCE METRIC:\n"
-        "   - Return confidence: 'high' for clear determinations.\n\n"
-        "Respond STRICTLY in valid JSON with no markdown formatting:\n"
+        f"You are the visual cortex for AR Smart Glasses. {mode_context}\n"
+        "Task: Accurately identify the main physical object, device, item, or subject shown in this image.\n\n"
+        "Instructions:\n"
+        "1. Accurately name the object category (e.g. Smartphone, Coffee Mug, Laptop, Wristwatch, Pen, Water Bottle, Book, Plant, Monitor, Eyeglasses, Keyboard, Backpack, Apple, Headphones).\n"
+        "2. If the user query is specific, include the requested brand, model, or characteristic.\n"
+        "3. Only if the view is purely a bare empty hand with no item or a totally empty blank background, return has_object: false and label: 'No Object Detected'.\n\n"
+        "Format response STRICTLY as valid JSON with no markdown formatting:\n"
         "{\n"
         '  "has_object": true,\n'
-        '  "label": "General class name (e.g. Mobile Phone, Laptop, Wristwatch, Coffee Mug) OR \'No Object Detected\'",\n'
+        '  "label": "Primary object class name",\n'
         '  "confidence": "high",\n'
-        '  "search_query": "Standard Wikipedia article title (or empty string if no object)"\n'
+        '  "search_query": "Standard Wikipedia article title for this object"\n'
         "}"
     )
 
     def format_vlm_output(parsed: dict, provider: str) -> dict:
-        label = parsed.get("label", "").strip()
-        has_object = parsed.get("has_object", True)
+        label = ""
+        for k in ["label", "object", "item", "name", "class", "primary_object", "detected_object", "title", "subject", "category"]:
+            v = parsed.get(k)
+            if v and isinstance(v, str) and v.strip():
+                label = v.strip()
+                break
 
-        # Check for no-object keywords
-        no_obj_keywords = ["no object", "empty hand", "none", "nothing", "no item", "empty frame", "empty palm", "background only", "bare hand", "empty"]
-        if not label or any(k in label.lower() for k in no_obj_keywords) or has_object is False:
+        normalized = label.lower()
+        raw_has_obj = parsed.get("has_object")
+        if raw_has_obj is None:
+            raw_has_obj = parsed.get("hasObject", parsed.get("object_detected", True))
+
+        if isinstance(raw_has_obj, str):
+            has_object = raw_has_obj.lower() not in ["false", "0", "no", "none", "null"]
+        else:
+            has_object = bool(raw_has_obj)
+
+        explicit_no_obj = [
+            "no object detected",
+            "no object",
+            "no item detected",
+            "no item",
+            "nothing detected",
+            "empty hand",
+            "bare hand",
+            "empty palm",
+            "empty frame",
+            "background only",
+            "none",
+            "nothing",
+            "unidentified",
+            "null",
+        ]
+
+        is_no_obj = False
+        if not label:
+            is_no_obj = True
+        elif (
+            normalized in explicit_no_obj
+            or normalized.startswith("no object")
+            or normalized.startswith("no item")
+            or normalized.startswith("empty hand")
+            or normalized.startswith("bare hand")
+            or normalized.startswith("nothing detected")
+        ):
+            is_no_obj = True
+        elif not has_object and normalized in ["hand", "palm", "background", "empty"]:
+            is_no_obj = True
+
+        search_query = (
+            parsed.get("search_query")
+            or parsed.get("searchQuery")
+            or parsed.get("wiki_title")
+            or parsed.get("wikipedia_title")
+            or label
+            or "Object"
+        )
+
+        if is_no_obj:
             result = {
                 "has_object": False,
                 "label": "No Object Detected",
@@ -216,45 +281,47 @@ async def identify_object(req: IdentifyRequest):
                 "has_object": True,
                 "label": label,
                 "confidence": parsed.get("confidence", "high") or "high",
-                "search_query": parsed.get("search_query", label) or label,
+                "search_query": str(search_query).strip(),
                 "provider": provider,
             }
         print(f"[VLM IDENTIFY - {provider}] -> has_object={result['has_object']}, label='{result['label']}'")
         return result
 
     # 1. Mistral AI Pixtral (Pixtral 12B / Pixtral Large) - Primary Model
-    mistral_key = get_mistral_key()
+    mistral_key = req.mistral_api_key or get_mistral_key()
     if mistral_key:
-        try:
-            res = await http_client.post(
-                "https://api.mistral.ai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "pixtral-12b-2409",
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": req.user_query or "Identify the object held in hand or detect if the hand is empty."},
-                                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{raw_b64}"},
-                            ],
-                        },
-                    ],
-                },
-            )
-            if res.status_code == 200:
-                raw_text = res.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(raw_text)
-                return format_vlm_output(parsed, "Mistral Pixtral 12B")
-            else:
-                print(f"Mistral Pixtral status error: {res.status_code} {res.text}")
-        except Exception as e:
-            print(f"Mistral Pixtral identification error: {e}")
+        models_to_try = ["pixtral-12b-2409", "pixtral-large-latest", "pixtral-12b"]
+        for model_name in models_to_try:
+            try:
+                res = await http_client.post(
+                    "https://api.mistral.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model_name,
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.1,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": f"{system_prompt}\n\nUser query: {req.user_query or 'Identify the primary object in this framed view.'}"},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
+                                ],
+                            },
+                        ],
+                    },
+                )
+                if res.status_code == 200:
+                    raw_text = res.json()["choices"][0]["message"]["content"]
+                    parsed = safe_parse_json(raw_text)
+                    return format_vlm_output(parsed, f"Mistral {model_name}")
+                else:
+                    print(f"Mistral {model_name} status error: {res.status_code} {res.text}")
+            except Exception as e:
+                print(f"Mistral {model_name} identification error: {e}")
 
     # 2. Anthropic Claude 3.5 Sonnet (Secondary Fallback)
-    anthropic_key = get_anthropic_key()
+    anthropic_key = req.anthropic_api_key or get_anthropic_key()
     if anthropic_key:
         try:
             res = await http_client.post(
@@ -291,14 +358,13 @@ async def identify_object(req: IdentifyRequest):
             )
             if res.status_code == 200:
                 raw_text = res.json()["content"][0]["text"]
-                clean = re.sub(r"```json|```", "", raw_text).strip()
-                parsed = json.loads(clean)
+                parsed = safe_parse_json(raw_text)
                 return format_vlm_output(parsed, "Claude 3.5 Sonnet")
         except Exception as e:
             print(f"Anthropic identification error: {e}")
 
     # 3. Google Gemini Flash / Pro
-    gemini_key = get_gemini_key()
+    gemini_key = req.gemini_api_key or get_gemini_key()
     if gemini_key:
         try:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
@@ -321,14 +387,13 @@ async def identify_object(req: IdentifyRequest):
             )
             if res.status_code == 200:
                 raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-                clean = re.sub(r"```json|```", "", raw_text).strip()
-                parsed = json.loads(clean)
+                parsed = safe_parse_json(raw_text)
                 return format_vlm_output(parsed, "Gemini Flash")
         except Exception as e:
             print(f"Gemini identification error: {e}")
 
     # 4. OpenAI GPT-4o
-    openai_key = get_openai_key()
+    openai_key = req.openai_api_key or get_openai_key()
     if openai_key:
         try:
             res = await http_client.post(
@@ -351,13 +416,13 @@ async def identify_object(req: IdentifyRequest):
             )
             if res.status_code == 200:
                 raw_text = res.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(raw_text)
+                parsed = safe_parse_json(raw_text)
                 return format_vlm_output(parsed, "GPT-4o")
         except Exception as e:
             print(f"OpenAI GPT-4o identification error: {e}")
 
     # 5. Groq Llama 3.2 Vision
-    groq_key = get_groq_key()
+    groq_key = req.groq_api_key or get_groq_key()
     if groq_key:
         try:
             res = await http_client.post(
@@ -380,7 +445,7 @@ async def identify_object(req: IdentifyRequest):
             )
             if res.status_code == 200:
                 raw_text = res.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(raw_text)
+                parsed = safe_parse_json(raw_text)
                 return format_vlm_output(parsed, "Groq Llama 3.2 Vision")
         except Exception as e:
             print(f"Groq Vision identification error: {e}")
@@ -390,11 +455,11 @@ async def identify_object(req: IdentifyRequest):
     if req.user_query:
         q = req.user_query.lower()
         if "phone" in q or "mobile" in q:
-            return {"has_object": True, "label": "Mobile Phone", "confidence": "high", "search_query": "Mobile phone", "provider": "Smart Knowledge"}
+            return {"has_object": True, "label": "Mobile Phone", "confidence": "high", "search_query": "Mobile phone", "provider": "Smart Knowledge", "fallback": True}
         if "laptop" in q or "computer" in q:
-            return {"has_object": True, "label": "Laptop", "confidence": "high", "search_query": "Laptop", "provider": "Smart Knowledge"}
+            return {"has_object": True, "label": "Laptop", "confidence": "high", "search_query": "Laptop", "provider": "Smart Knowledge", "fallback": True}
         if "watch" in q:
-            return {"has_object": True, "label": "Wristwatch", "confidence": "high", "search_query": "Watch", "provider": "Smart Knowledge"}
+            return {"has_object": True, "label": "Wristwatch", "confidence": "high", "search_query": "Watch", "provider": "Smart Knowledge", "fallback": True}
 
     return {
         "has_object": False,
@@ -402,6 +467,7 @@ async def identify_object(req: IdentifyRequest):
         "confidence": "high",
         "search_query": "",
         "provider": "Smart Vision Fallback",
+        "fallback": True,
     }
 
 
@@ -424,23 +490,24 @@ async def ground_wikipedia(req: GroundRequest):
             if res.status_code == 200:
                 data = res.json()
                 if data.get("type") != "disambiguation" and data.get("extract"):
-                    extract = data["extract"]
-                    wiki_title = data.get("title", clean_query)
-                    thumbnail_url = data.get("thumbnail", {}).get("source")
+                    extract = data.get("extract", "")
+                    wiki_title = data.get("titles", {}).get("display", clean_query)
                     wiki_url = data.get("content_urls", {}).get("desktop", {}).get("page", wiki_url)
-            else:
-                search_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={clean_query}&utf8=&format=json"
-                search_res = await client.get(search_url)
+                    thumbnail_url = data.get("thumbnail", {}).get("source")
+
+            if not extract:
+                search_api = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={clean_query}&utf8=&format=json"
+                search_res = await client.get(search_api)
                 if search_res.status_code == 200:
                     hits = search_res.json().get("query", {}).get("search", [])
                     if hits:
-                        first_title = hits[0]["title"]
-                        hit_summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{first_title.replace(' ', '_')}"
-                        hit_res = await client.get(hit_summary_url)
+                        top_title = hits[0].get("title")
+                        hit_summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{top_title.replace(' ', '_')}"
+                        hit_res = await client.get(hit_summary_url, headers={"Accept": "application/json"})
                         if hit_res.status_code == 200:
                             hit_data = hit_res.json()
-                            extract = hit_data.get("extract", "")
-                            wiki_title = hit_data.get("title", first_title)
+                            extract = hit_data.get("extract", hits[0].get("snippet", ""))
+                            wiki_title = hit_data.get("titles", {}).get("display", top_title)
                             thumbnail_url = hit_data.get("thumbnail", {}).get("source")
                             wiki_url = hit_data.get("content_urls", {}).get("desktop", {}).get("page", wiki_url)
     except Exception as e:
@@ -450,42 +517,45 @@ async def ground_wikipedia(req: GroundRequest):
         extract = f"{req.label} is an identified subject in your field of view."
 
     # Generate calm narrator summary with Mistral if available
-    mistral_key = get_mistral_key()
+    mistral_key = req.mistral_api_key or get_mistral_key()
     if mistral_key and extract:
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                narrator_prompt = (
-                    "You are a calm, articulate narrator for a pair of high-end AR smart glasses. "
-                    f"The user is looking at: '{req.label}'. "
-                    f"Grounding Wikipedia extract: '{extract}'. "
-                    "Generate a concise JSON response with: "
-                    "'short_answer': 2 to 3 calm, concise sentences explaining what this is and its significance (no conversational filler, no 'Sure!', direct museum guide voice), "
-                    "'expanded_text': 1-2 paragraphs of encyclopedic detail. "
-                    "Respond strictly in valid JSON with keys 'short_answer' and 'expanded_text'."
-                )
-                res = await client.post(
-                    "https://api.mistral.ai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "mistral-small-latest",
-                        "response_format": {"type": "json_object"},
-                        "messages": [{"role": "user", "content": narrator_prompt}],
-                    },
-                )
-                if res.status_code == 200:
-                    resp_data = res.json()["choices"][0]["message"]["content"]
-                    parsed_narrator = json.loads(resp_data)
-                    if parsed_narrator.get("short_answer"):
-                        return {
-                            "label": req.label,
-                            "wiki_title": wiki_title,
-                            "wiki_url": wiki_url,
-                            "wiki_thumbnail": thumbnail_url,
-                            "short_answer": parsed_narrator.get("short_answer"),
-                            "expanded_text": parsed_narrator.get("expanded_text", extract),
-                        }
-        except Exception as e:
-            print(f"Mistral narrator synthesis error in /api/ground: {e}")
+        narrator_prompt = (
+            "You are a calm, articulate narrator for a pair of high-end AR smart glasses. "
+            f"The user is looking at: '{req.label}'. "
+            f"Grounding Wikipedia extract: '{extract}'. "
+            "Generate a concise JSON response with: "
+            "'short_answer': 2 to 3 calm, concise sentences explaining what this is and its significance (no conversational filler, no 'Sure!', direct museum guide voice), "
+            "'expanded_text': 1-2 paragraphs of encyclopedic detail. "
+            "Respond strictly in valid JSON with keys 'short_answer' and 'expanded_text'."
+        )
+        for model in ["mistral-small-latest", "ministral-8b-latest", "mistral-large-latest"]:
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    res = await client.post(
+                        "https://api.mistral.ai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": model,
+                            "response_format": {"type": "json_object"},
+                            "messages": [{"role": "user", "content": narrator_prompt}],
+                        },
+                    )
+                    if res.status_code == 200:
+                        resp_data = res.json()["choices"][0]["message"]["content"]
+                        parsed_narrator = safe_parse_json(resp_data)
+                        short_ans = parsed_narrator.get("short_answer") or parsed_narrator.get("shortAnswer")
+                        expanded_txt = parsed_narrator.get("expanded_text") or parsed_narrator.get("expandedText")
+                        if short_ans:
+                            return {
+                                "label": req.label,
+                                "wiki_title": wiki_title,
+                                "wiki_url": wiki_url,
+                                "wiki_thumbnail": thumbnail_url,
+                                "short_answer": short_ans,
+                                "expanded_text": expanded_txt or extract,
+                            }
+            except Exception as e:
+                print(f"Mistral {model} narrator synthesis error in /api/ground: {e}")
 
     # Split into 2-3 calm narrator sentences as fallback
     sentences = re.findall(r"[^.!?]+[.!?]+", extract) or [extract]
