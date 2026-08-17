@@ -1,15 +1,15 @@
 import React from 'react';
-import { Mic, MicOff, Settings, Sparkles, SwitchCamera, HelpCircle, Layers, Circle, Square, Film } from 'lucide-react';
+import { Settings, Sparkles, SwitchCamera, HelpCircle, Layers, Circle, Square, Film, OctagonX } from 'lucide-react';
 import { audioFX } from '../../services/audioEffects';
 
 interface TopBarProps {
-  isListening: boolean;
   isSpeaking: boolean;
   isProcessing: boolean;
+  hasActiveRecognition: boolean;
   isRecording: boolean;
   recordingDuration: number;
   hasCachedRecording: boolean;
-  onToggleMic: () => void;
+  onStopRecognition: () => void;
   onSwitchCamera: () => void;
   onToggleRecording: () => void;
   onOpenRecordingModal: () => void;
@@ -20,13 +20,13 @@ interface TopBarProps {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
-  isListening,
   isSpeaking,
   isProcessing,
+  hasActiveRecognition,
   isRecording,
   recordingDuration,
   hasCachedRecording,
-  onToggleMic,
+  onStopRecognition,
   onSwitchCamera,
   onToggleRecording,
   onOpenRecordingModal,
@@ -84,6 +84,24 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {/* Action Controls */}
       <div className="flex items-center gap-2 pointer-events-auto">
+        {/* Manual Stop Recognition Button */}
+        <button
+          onClick={() => {
+            audioFX.playPinchTrigger?.();
+            onStopRecognition();
+          }}
+          disabled={!hasActiveRecognition}
+          className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-space transition-all duration-200 border ${
+            hasActiveRecognition
+              ? 'bg-rose-500/25 text-rose-200 border-rose-500/60 shadow-[0_0_15px_rgba(244,63,94,0.4)] font-bold cursor-pointer hover:bg-rose-500/40 animate-pulse'
+              : 'glass-button text-slate-500 border-white/5 opacity-50 cursor-not-allowed'
+          }`}
+          title="Stop current identification and dismiss cards"
+        >
+          <OctagonX className={`w-3.5 h-3.5 ${hasActiveRecognition ? 'text-rose-300' : 'text-slate-500'}`} />
+          <span className="font-mono text-[11px]">STOP</span>
+        </button>
+
         {/* Record Session Start / Stop Button */}
         <button
           onClick={() => {
@@ -124,32 +142,6 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="hidden md:inline">Saved Clip</span>
           </button>
         )}
-
-        {/* Voice Recognition Toggle */}
-        <button
-          onClick={() => {
-            audioFX.playPinchTrigger?.();
-            onToggleMic();
-          }}
-          className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-space transition-all duration-200 border ${
-            isListening
-              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50 shadow-[0_0_12px_rgba(0,240,255,0.4)]'
-              : 'glass-button text-slate-400 hover:text-slate-200 border-white/10'
-          }`}
-          title={isListening ? 'Voice Commands Active (Say "What\'s this")' : 'Click to enable Voice Commands'}
-        >
-          {isListening ? (
-            <>
-              <Mic className="w-3.5 h-3.5 text-cyan-300 animate-pulse" />
-              <span className="hidden md:inline font-mono text-[11px]">VOICE ON</span>
-            </>
-          ) : (
-            <>
-              <MicOff className="w-3.5 h-3.5 text-slate-400" />
-              <span className="hidden md:inline font-mono text-[11px]">VOICE OFF</span>
-            </>
-          )}
-        </button>
 
         {/* Camera Switch */}
         <button
@@ -206,3 +198,4 @@ export const TopBar: React.FC<TopBarProps> = ({
     </header>
   );
 };
+

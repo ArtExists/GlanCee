@@ -5,16 +5,15 @@ import { ModeToggle } from './components/GlassesHUD/ModeToggle';
 import { CameraViewport } from './components/GlassesHUD/CameraViewport';
 import { AnchoredCard } from './components/GlassesHUD/AnchoredCard';
 import { ManualTriggerButton } from './components/GlassesHUD/ManualTriggerButton';
-import { VoiceIndicator } from './components/GlassesHUD/VoiceIndicator';
 import { SettingsModal } from './components/GlassesHUD/SettingsModal';
 import { SimulationBench } from './components/GlassesHUD/SimulationBench';
 import { TutorialOverlay } from './components/GlassesHUD/TutorialOverlay';
 import { RecordingReadyCard } from './components/GlassesHUD/RecordingReadyCard';
 import { vlmService } from './services/vlmService';
 import { wikipediaService } from './services/wikipediaService';
-import { speechService, VoiceCommandAction } from './services/speechService';
+import { speechService } from './services/speechService';
 import { audioFX } from './services/audioEffects';
-import { GestureDetectionResult } from './services/gestureDetector';
+import { gestureDetector, GestureDetectionResult } from './services/gestureDetector';
 import { recordingService } from './services/recordingService';
 import { recordingStorage } from './services/recordingStorage';
 
@@ -38,10 +37,8 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>('HOLDING');
   const [cards, setCards] = useState<IdentifiedCard[]>([]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [isListening, setIsListening] = useState<boolean>(false);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [speakingCardId, setSpeakingCardId] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<string>('');
   const [currentDetection, setCurrentDetection] = useState<GestureDetectionResult | null>(null);
   const [simulationImage, setSimulationImage] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<'SETTINGS' | 'SIMULATION' | 'TUTORIAL' | null>(null);
@@ -232,87 +229,28 @@ export const App: React.FC = () => {
     [currentDetection, executeIdentificationPipeline]
   );
 
-  // Voice Command Handler (Immediate STOP, IDENTIFY, TELL_ME_MORE, CLEAR, SWITCH_MODE)
-  const handleVoiceCommand = useCallback(
-    (action: VoiceCommandAction, fullQuery?: string) => {
-      if (action === 'STOP') {
-        // Immediate STOP: invalidate any active in-flight pipeline, stop voice, and clear all cards
-        activePipelineIdRef.current = 0;
-        speechService.stopSpeaking();
-        setSpeakingCardId(null);
-        setCards([]);
-        pipelineLockRef.current = false;
-        setIsProcessing(false);
-        audioFX.playPinchTrigger();
-        return;
-      }
-
-      if (action === 'IDENTIFY') {
-        audioFX.playTargetLock();
-        // Check if user asked a specific question e.g. "what brand is this phone?"
-        const isSpecificBrandOrModel =
-          fullQuery &&
-          (fullQuery.toLowerCase().includes('brand') ||
-            fullQuery.toLowerCase().includes('model') ||
-            fullQuery.toLowerCase().includes('exact') ||
-            fullQuery.toLowerCase().includes('species') ||
-            fullQuery.toLowerCase().includes('price'));
-
-        const hint = isSpecificBrandOrModel ? fullQuery : undefined;
-        handleManualCapture(hint);
-        return;
-      }
-
-      if (action === 'TELL_ME_MORE') {
-        if (cards.length > 0) {
-          const topCard = cards[0];
-          setSpeakingCardId(topCard.id);
-          audioFX.playVoiceTriggerSound();
-          speechService.speak(topCard.expandedText, () => {
-            setSpeakingCardId(null);
-            setTimeout(() => {
-              setCards((prev) => prev.filter((c) => c.id !== topCard.id));
-            }, 2000);
-          });
-        }
-        return;
-      }
-
-      if (action === 'CLEAR') {
-        speechService.stopSpeaking();
-        setSpeakingCardId(null);
-        setCards([]);
-        audioFX.playPinchTrigger();
-        return;
-      }
-
-      if (action === 'SWITCH_MODE') {
-        setMode((prev) => (prev === 'HOLDING' ? 'LOOKING_AT' : 'HOLDING'));
-        audioFX.playPinchTrigger();
-        return;
-      }
-    },
-    [cards, handleManualCapture]
-  );
-
-  // Setup Voice STT Callbacks
+  // Setup Speech Output Callbacks (Voice commands removed for now)
   useEffect(() => {
     speechService.setCallbacks({
-      onListeningStateChange: (listening) => setIsListening(listening),
       onSpeakingStateChange: (speaking) => setIsSpeaking(speaking),
-      onTranscript: (text) => setTranscript(text),
-      onCommandTriggered: (action, query) => {
-        handleVoiceCommand(action, query);
-      },
-      onError: (err) => console.warn('Voice error:', err),
     });
 
-    speechService.startListening(true);
-
     return () => {
-      speechService.stopListening();
+      speechService.stopSpeaking();
     };
-  }, [handleVoiceCommand]);
+  }, []);
+
+  // Manual Stop Recognition (cancels in-flight pipeline, speech, and clears cards)
+  const handleManualStopRecognition = useCallback(() => {
+    activePipelineIdRef.current = 0;
+    pipelineLockRef.current = false;
+    setIsProcessing(false);
+    speechService.stopSpeaking();
+    setSpeakingCardId(null);
+    setCards([]);
+    gestureDetector.reset();
+    audioFX.playPinchTrigger?.();
+  }, []);
 
   // Card Speech controls
   const handlePlayVoice = (card: IdentifiedCard) => {
@@ -508,13 +446,13 @@ export const App: React.FC = () => {
 
       {/* 2. Minimal Top Bar */}
       <TopBar
-        isListening={isListening}
         isSpeaking={isSpeaking}
         isProcessing={isProcessing}
+        hasActiveRecognition={isProcessing || isSpeaking || cards.length > 0}
         isRecording={isRecording}
         recordingDuration={recordingDuration}
         hasCachedRecording={!!cachedSession}
-        onToggleMic={() => speechService.toggleListening()}
+        onStopRecognition={handleManualStopRecognition}
         onSwitchCamera={() =>
           setSettings((s) => ({
             ...s,
@@ -527,13 +465,6 @@ export const App: React.FC = () => {
         onOpenSimulation={() => setActiveModal('SIMULATION')}
         onOpenTutorial={() => setActiveModal('TUTORIAL')}
         hasCustomKey={!!(settings.mistralApiKey || settings.anthropicApiKey || settings.geminiApiKey || settings.openaiApiKey || settings.groqApiKey)}
-      />
-
-      {/* 3. Live Voice Waveform & Recognized Speech Indicator */}
-      <VoiceIndicator
-        isListening={isListening}
-        isSpeaking={isSpeaking}
-        transcript={transcript}
       />
 
       {/* 4. Spatially Anchored Floating Info Cards (Stacking) */}
