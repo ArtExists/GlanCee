@@ -290,35 +290,49 @@ async def identify_object(req: IdentifyRequest):
     # 1. Mistral AI Pixtral (Pixtral 12B / Pixtral Large) - Primary Model
     mistral_key = req.mistral_api_key or get_mistral_key()
     if mistral_key:
-        models_to_try = ["pixtral-12b-2409", "pixtral-large-latest", "pixtral-12b"]
+        models_to_try = [
+            "pixtral-12b-2409",
+            "pixtral-large-latest",
+            "pixtral-large-2411",
+            "mistral-large-latest",
+            "pixtral-12b",
+        ]
         for model_name in models_to_try:
-            try:
-                res = await http_client.post(
-                    "https://api.mistral.ai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
-                    json={
+            for use_json in [True, False]:
+                try:
+                    payload = {
                         "model": model_name,
-                        "response_format": {"type": "json_object"},
                         "temperature": 0.1,
                         "messages": [
                             {
                                 "role": "user",
                                 "content": [
-                                    {"type": "text", "text": f"{system_prompt}\n\nUser query: {req.user_query or 'Identify the primary object in this framed view.'}"},
+                                    {"type": "text", "text": f"{system_prompt}\n\nWhat is this object? Identify the specific object and Wikipedia search query in JSON."},
                                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
                                 ],
                             },
                         ],
-                    },
-                )
-                if res.status_code == 200:
-                    raw_text = res.json()["choices"][0]["message"]["content"]
-                    parsed = safe_parse_json(raw_text)
-                    return format_vlm_output(parsed, f"Mistral {model_name}")
-                else:
-                    print(f"Mistral {model_name} status error: {res.status_code} {res.text}")
-            except Exception as e:
-                print(f"Mistral {model_name} identification error: {e}")
+                    }
+                    if use_json:
+                        payload["response_format"] = {"type": "json_object"}
+
+                    res = await http_client.post(
+                        "https://api.mistral.ai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    if res.status_code == 200:
+                        raw_text = res.json()["choices"][0]["message"]["content"]
+                        parsed = safe_parse_json(raw_text)
+                        return format_vlm_output(parsed, f"Mistral {model_name}")
+                    else:
+                        print(f"Mistral {model_name} status error: {res.status_code} {res.text}")
+                        if res.status_code == 400 and use_json:
+                            continue
+                        break
+                except Exception as e:
+                    print(f"Mistral {model_name} identification error: {e}")
+
 
     # 2. Anthropic Claude 3.5 Sonnet (Secondary Fallback)
     anthropic_key = req.anthropic_api_key or get_anthropic_key()

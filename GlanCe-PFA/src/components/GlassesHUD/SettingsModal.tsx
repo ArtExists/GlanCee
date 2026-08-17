@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AppSettings } from '../../types';
 import { X, Key, Volume2, Sliders, ShieldCheck, Sparkles, Check, Server, Mic } from 'lucide-react';
 import { audioFX } from '../../services/audioEffects';
+import { vlmService } from '../../services/vlmService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -25,6 +26,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [groqKey, setGroqKey] = useState(settings.groqApiKey);
   const [backendUrl, setBackendUrl] = useState(settings.backendUrl);
   const [isSaved, setIsSaved] = useState(false);
+  const [isTestingMistral, setIsTestingMistral] = useState(false);
+  const [mistralTestResult, setMistralTestResult] = useState<{ success?: boolean; message?: string } | null>(null);
+
+  const handleTestMistral = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!mistralKey.trim()) {
+      setMistralTestResult({ success: false, message: 'Please enter a Mistral API key first.' });
+      return;
+    }
+    setIsTestingMistral(true);
+    setMistralTestResult(null);
+    const result = await vlmService.testMistralKey(mistralKey);
+    setIsTestingMistral(false);
+    setMistralTestResult(result);
+    if (result.success) {
+      audioFX.playCardReveal?.();
+    }
+  };
+
 
   if (!isOpen) return null;
 
@@ -98,17 +118,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* Mistral Pixtral Key */}
             <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-400/30">
               <label className="block text-xs font-medium text-cyan-200 mb-1 flex items-center justify-between">
-                <span>Mistral API Key (Pixtral 12B Vision & Calm Narrator)</span>
+                <span>Mistral API Key (Pixtral Vision & Calm Narrator)</span>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-400/20 text-cyan-300 border border-cyan-400/30">Active VLM</span>
               </label>
-              <input
-                type="password"
-                value={mistralKey}
-                onChange={(e) => setMistralKey(e.target.value)}
-                placeholder="mis_..."
-                className="w-full px-3 py-2 rounded-xl bg-black/70 border border-cyan-400/40 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-300 transition-colors font-mono"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={mistralKey}
+                  onChange={(e) => setMistralKey(e.target.value)}
+                  placeholder="mis_..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-black/70 border border-cyan-400/40 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-300 transition-colors font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleTestMistral}
+                  disabled={isTestingMistral}
+                  className="px-3 py-2 rounded-xl text-xs font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 hover:bg-cyan-500/30 transition-all font-semibold disabled:opacity-50"
+                >
+                  {isTestingMistral ? 'Testing...' : 'Test Key'}
+                </button>
+              </div>
+              {mistralTestResult && (
+                <div
+                  className={`mt-2 p-2 rounded-lg text-[11px] font-mono border flex items-center gap-1.5 ${
+                    mistralTestResult.success
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  }`}
+                >
+                  <span>{mistralTestResult.success ? '✅' : '❌'}</span>
+                  <span>{mistralTestResult.message}</span>
+                </div>
+              )}
             </div>
+
 
             {/* Anthropic Claude Key */}
             <div>

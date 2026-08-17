@@ -56,54 +56,121 @@ export class VLMService {
   }
 
   /**
-   * Crop image from video/image source based on normalized bounding box (with optional padding)
+   * Test Mistral API key validity and connectivity
+   */
+  public async testMistralKey(key: string): Promise<{ success: boolean; message: string }> {
+    if (!key || !key.trim()) {
+      return { success: false, message: 'Please enter a Mistral API key first.' };
+    }
+    const cleanKey = key.trim();
+    try {
+      const res = await this.fetchWithProxyFallback(
+        '/api/mistral-proxy/v1/chat/completions',
+        'https://api.mistral.ai/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cleanKey}`,
+          },
+          body: JSON.stringify({
+            model: 'mistral-small-latest',
+            messages: [{ role: 'user', content: 'Say OK' }],
+            max_tokens: 5,
+          }),
+        }
+      );
+
+      if (res.ok) {
+        return { success: true, message: 'Mistral API key is active & verified!' };
+      } else {
+        const errText = await res.text();
+        if (res.status === 401) {
+          return { success: false, message: 'Invalid API Key (HTTP 401 Unauthorized).' };
+        }
+        if (res.status === 429) {
+          return { success: false, message: 'Rate Limit / Quota Exceeded (HTTP 429).' };
+        }
+        return { success: false, message: `Mistral Error (HTTP ${res.status}): ${errText.slice(0, 80)}` };
+      }
+    } catch (err: any) {
+      return { success: false, message: `Connection Error: ${err?.message || 'Failed to reach Mistral'}` };
+    }
+  }
+
+  /**
+   * Crop image from video/image source with true intrinsic pixel dimensions
    */
   public cropImage(
     source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement,
     box: BoundingBox,
-    paddingPercent: number = 0.10
+    paddingPercent: number = 0.20
   ): string {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) return '';
 
-    const sourceWidth = 'videoWidth' in source ? source.videoWidth : source.width;
-    const sourceHeight = 'videoHeight' in source ? source.videoHeight : source.height;
+    // Intrinsic pixel dimensions
+    let sourceWidth = 640;
+    let sourceHeight = 480;
 
-    // Apply padding
-    const padW = box.width * paddingPercent;
-    const padH = box.height * paddingPercent;
+    if ('videoWidth' in source && source.videoWidth > 0) {
+      sourceWidth = source.videoWidth;
+      sourceHeight = source.videoHeight;
+    } else if ('naturalWidth' in source && source.naturalWidth > 0) {
+      sourceWidth = source.naturalWidth;
+      sourceHeight = source.naturalHeight;
+    } else if ('width' in source && typeof source.width === 'number' && source.width > 0) {
+      sourceWidth = source.width;
+      sourceHeight = ('height' in source && typeof source.height === 'number') ? source.height : 480;
+    }
 
-    const rawX = Math.max(0, box.x - padW);
-    const rawY = Math.max(0, box.y - padH);
-    const rawW = Math.min(1 - rawX, box.width + padW * 2);
-    const rawH = Math.min(1 - rawY, box.height + padH * 2);
+    // Ensure the bounding box has a generous minimum size (at least 35% of frame) so the target object is clearly in view
+    const effectiveWidth = Math.max(0.35, Math.min(0.95, box.width));
+    const effectiveHeight = Math.max(0.35, Math.min(0.95, box.height));
+    const centerX = Math.max(effectiveWidth / 2, Math.min(1 - effectiveWidth / 2, box.x + box.width / 2));
+    const centerY = Math.max(effectiveHeight / 2, Math.min(1 - effectiveHeight / 2, box.y + box.height / 2));
 
-    const sx = Math.max(0, rawX * sourceWidth);
-    const sy = Math.max(0, rawY * sourceHeight);
-    const sWidth = Math.max(10, Math.min(sourceWidth - sx, rawW * sourceWidth));
-    const sHeight = Math.max(10, Math.min(sourceHeight - sy, rawH * sourceHeight));
+    const padW = effectiveWidth * paddingPercent;
+    const padH = effectiveHeight * paddingPercent;
 
-    // High quality dimension for vision models
-    const maxDimension = 1024;
+    const rawX = Math.max(0, centerX - effectiveWidth / 2 - padW);
+    const rawY = Math.max(0, centerY - effectiveHeight / 2 - padH);
+    const rawW = Math.min(1 - rawX, effectiveWidth + padW * 2);
+    const rawH = Math.min(1 - rawY, effectiveHeight + padH * 2);
+
+    const sx = Math.max(0, Math.floor(rawX * sourceWidth));
+    const sy = Math.max(0, Math.floor(rawY * sourceHeight));
+    const sWidth = Math.max(30, Math.min(sourceWidth - sx, Math.floor(rawW * sourceWidth)));
+    const sHeight = Math.max(30, Math.min(sourceHeight - sy, Math.floor(rawH * sourceHeight)));
+
+    // Resize to high clarity dimensions (512 to 1024px) for vision models
+    const maxDim = 1024;
     let targetWidth = sWidth;
     let targetHeight = sHeight;
 
-    if (targetWidth > maxDimension || targetHeight > maxDimension) {
+    if (targetWidth > maxDim || targetHeight > maxDim) {
       if (targetWidth > targetHeight) {
-        targetHeight = (targetHeight * maxDimension) / targetWidth;
-        targetWidth = maxDimension;
+        targetHeight = Math.round((targetHeight * maxDim) / targetWidth);
+        targetWidth = maxDim;
       } else {
-        targetWidth = (targetWidth * maxDimension) / targetHeight;
-        targetHeight = maxDimension;
+        targetWidth = Math.round((targetWidth * maxDim) / targetHeight);
+        targetHeight = maxDim;
       }
+    } else if (targetWidth < 384 && targetHeight < 384) {
+      const scale = 384 / Math.min(targetWidth, targetHeight);
+      targetWidth = Math.round(targetWidth * scale);
+      targetHeight = Math.round(targetHeight * scale);
     }
 
-    canvas.width = Math.round(targetWidth);
-    canvas.height = Math.round(targetHeight);
+    canvas.width = Math.max(64, targetWidth);
+    canvas.height = Math.max(64, targetHeight);
 
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(source, sx, sy, sWidth, sHeight, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.9);
+
+    return canvas.toDataURL('image/jpeg', 0.92);
   }
 
   /**
@@ -275,7 +342,7 @@ Respond in strict JSON:
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  Authorization: `Bearer ${this.mistralApiKey}`,
+                  Authorization: `Bearer ${this.mistralApiKey.trim()}`,
                 },
                 body: JSON.stringify({
                   model: model,
@@ -397,12 +464,13 @@ Respond in strict JSON:
       parsed.title ||
       parsed.subject ||
       parsed.category ||
+      parsed.description ||
       ''
     ).toString().trim();
 
     const normalized = rawLabel.toLowerCase();
 
-    // Exact phrases indicating no object (NEVER match substrings like 'none' or 'empty' inside 'iPhone' or 'empty mug')
+    // Exact phrases indicating truly no object
     const explicitNoObjPhrases = [
       'no object detected',
       'no object',
@@ -430,11 +498,6 @@ Respond in strict JSON:
       normalized.startsWith('empty hand') ||
       normalized.startsWith('bare hand') ||
       normalized.startsWith('nothing detected')
-    ) {
-      isExplicitNoObj = true;
-    } else if (
-      (parsed.has_object === false || parsed.hasObject === false) &&
-      (normalized === 'hand' || normalized === 'palm' || normalized === 'background' || normalized === 'empty')
     ) {
       isExplicitNoObj = true;
     }
@@ -472,79 +535,106 @@ Respond in strict JSON:
         ? 'The user is holding or presenting a physical object in front of the camera.'
         : 'The user has framed an object or scene in their environment.';
 
-    const systemPrompt = `You are the visual cortex for AR Smart Glasses. ${modeContext}
-Task: Accurately identify the main physical object, device, item, or subject shown in this image.
+    const systemPrompt = `You are an expert visual cortex for AR Smart Glasses. ${modeContext}
+Task: Accurately identify the main physical object, device, item, product, or subject shown in this image.
 
-Instructions:
-1. Accurately name the specific object or category (e.g. Smartphone, Coffee Mug, Laptop, Wristwatch, Pen, Water Bottle, Book, Plant, Monitor, Eyeglasses, Keyboard, Backpack, Apple, Headphones).
-2. If the user query is specific ("${hintQuery || ''}"), include the requested brand, model, or characteristic.
-3. Only if the view is purely a bare empty hand with no item or a totally empty blank background, return has_object: false and label: 'No Object Detected'.
-
-Format response STRICTLY as JSON:
+RULES:
+1. IDENTIFY THE OBJECT: State what the physical object is clearly and accurately (e.g. "Smartphone", "Coffee Mug", "Laptop", "Wristwatch", "Water Bottle", "Pen", "Headphones", "Computer Keyboard", "Book", "Houseplant", "Eyeglasses", "Apple", "Backpack", "Chair", etc.).
+2. If a hand is holding or pointing at an item, identify the ITEM held, NOT the hand.
+3. If the user query is specific ("${hintQuery || ''}"), include relevant brand, model, or details.
+4. Output strictly valid JSON with no markdown formatting:
 {
   "has_object": true,
   "label": "Primary object name",
   "confidence": "high",
   "search_query": "Wikipedia article title for this object"
-}`;
+}
+5. Only return {"has_object": false, "label": "No Object Detected"} if the frame is completely black, completely blank, or literally only an empty bare hand with zero objects present.`;
 
-    // Candidate Pixtral models in order of capability
-    const candidateModels = ['pixtral-12b-2409', 'pixtral-large-latest', 'pixtral-12b'];
+    // Candidate vision models in order
+    const candidateModels = [
+      'pixtral-12b-2409',
+      'pixtral-large-latest',
+      'pixtral-large-2411',
+      'mistral-large-latest',
+      'pixtral-12b',
+    ];
+
     let lastError: any = null;
 
     for (const model of candidateModels) {
-      try {
-        const payload = {
-          model: model,
-          response_format: { type: 'json_object' },
-          temperature: 0.1,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: `${systemPrompt}\n\nUser request: ${hintQuery || 'Identify the primary object in this framed view.'}`,
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:image/jpeg;base64,{rawB64}`.replace('{rawB64}', rawB64),
+      // Try with response_format first, then without if 400
+      for (const useJsonFormat of [true, false]) {
+        try {
+          const bodyPayload: any = {
+            model: model,
+            temperature: 0.1,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: `${systemPrompt}\n\nWhat is this object? Provide its name and Wikipedia search query in JSON.`,
                   },
-                },
-              ],
-            },
-          ],
-        };
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: `data:image/jpeg;base64,${rawB64}`,
+                    },
+                  },
+                ],
+              },
+            ],
+          };
 
-        const response = await this.fetchWithProxyFallback(
-          '/api/mistral-proxy/v1/chat/completions',
-          'https://api.mistral.ai/v1/chat/completions',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${this.mistralApiKey}`,
-            },
-            body: JSON.stringify(payload),
+          if (useJsonFormat) {
+            bodyPayload.response_format = { type: 'json_object' };
           }
-        );
 
-        if (response.ok) {
-          const data = await response.json();
-          const rawContent = data.choices?.[0]?.message?.content || '{}';
-          const parsed = this.safeParseJSON(rawContent);
-          return this.parseClientVLMResult(parsed, `Mistral ${model}`);
-        } else {
-          const errText = await response.text();
-          lastError = new Error(`Mistral (${model}) HTTP ${response.status}: ${errText}`);
+          const response = await this.fetchWithProxyFallback(
+            '/api/mistral-proxy/v1/chat/completions',
+            'https://api.mistral.ai/v1/chat/completions',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.mistralApiKey.trim()}`,
+              },
+              body: JSON.stringify(bodyPayload),
+            }
+          );
+
+          if (response.ok) {
+            const data = await response.json();
+            const rawContent = data.choices?.[0]?.message?.content || '{}';
+            console.log(`[Mistral Vision (${model})] Raw output:`, rawContent);
+            const parsed = this.safeParseJSON(rawContent);
+            return this.parseClientVLMResult(parsed, `Mistral ${model}`);
+          } else {
+            const errText = await response.text();
+            console.warn(`[Mistral Vision (${model})] status ${response.status}:`, errText);
+            lastError = new Error(`Mistral (${model}) HTTP ${response.status}: ${errText}`);
+            // If it's a 400 bad request with json_object, try next loop iteration without json_object
+            if (response.status === 400 && useJsonFormat) {
+              continue;
+            }
+            // If it's 401 or 403 or 429, don't keep hammering other models, throw early so user knows
+            if (response.status === 401 || response.status === 403 || response.status === 429) {
+              throw lastError;
+            }
+            break; // Try next model
+          }
+        } catch (err: any) {
+          lastError = err;
+          if (err.message && (err.message.includes('401') || err.message.includes('429'))) {
+            throw err;
+          }
         }
-      } catch (err) {
-        lastError = err;
       }
     }
 
-    throw lastError || new Error('Mistral Pixtral identification failed across all candidate models');
+    throw lastError || new Error('Mistral vision calls failed across all candidate models.');
   }
 
   // --- Direct Anthropic Claude Call ---
