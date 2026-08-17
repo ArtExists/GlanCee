@@ -87,6 +87,8 @@ class SpeechService {
     return false;
   }
 
+  private isPausedForProcessing: boolean = false;
+
   private initRecognition() {
     const win = window as IWindow;
     const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
@@ -104,39 +106,49 @@ class SpeechService {
       this.recognition.lang = 'en-US';
 
       this.recognition.onstart = () => {
-        this.isListening = true;
-        this.callbacks.onListeningStateChange?.(true);
+        // Maintain continuous listening state
+        if (!this.isListening) {
+          this.isListening = true;
+          this.callbacks.onListeningStateChange?.(true);
+        }
       };
 
       this.recognition.onend = () => {
-        this.isListening = false;
-        this.callbacks.onListeningStateChange?.(false);
-
-        // Auto restart gracefully after brief cooldown if autoRestart is active
-        if (this.autoRestart) {
+        // If user wants continuous listening and not paused for processing/speaking:
+        // Restart seamlessly in background without toggling the UI state!
+        if (this.autoRestart && !this.isPausedForProcessing) {
           clearTimeout(this.restartTimeout);
           this.restartTimeout = setTimeout(() => {
-            if (this.autoRestart && !this.isListening) {
+            if (this.autoRestart && !this.isPausedForProcessing) {
               try {
                 this.recognition.start();
               } catch {
-                // Ignore if already active or pending
+                // Ignore if already active
               }
             }
-          }, 300);
+          }, 80);
+          return;
+        }
+
+        // Only turn off if explicitly stopped or paused for processing
+        if (this.isListening) {
+          this.isListening = false;
+          this.callbacks.onListeningStateChange?.(false);
         }
       };
 
       this.recognition.onerror = (event: any) => {
         const errType = event.error;
         if (errType === 'no-speech' || errType === 'aborted') {
-          // Expected harmless events, keep listening
+          // Expected harmless events, keep listening seamlessly
           return;
         }
 
         if (errType === 'not-allowed' || errType === 'audio-capture') {
           this.callbacks.onError?.('Microphone access blocked. Click the mic button to grant access.');
           this.autoRestart = false;
+          this.isListening = false;
+          this.callbacks.onListeningStateChange?.(false);
         } else {
           console.warn('Speech recognition warning:', errType);
         }
@@ -380,11 +392,15 @@ class SpeechService {
 
   public async startListening(continuous: boolean = true) {
     this.autoRestart = continuous;
+    this.isPausedForProcessing = false;
     if (!this.recognition) {
       this.initRecognition();
     }
     if (!this.recognition) return;
     if (this.isListening) return;
+
+    this.isListening = true;
+    this.callbacks.onListeningStateChange?.(true);
 
     try {
       this.recognition.start();
@@ -395,8 +411,28 @@ class SpeechService {
     }
   }
 
+  public pauseForProcessing() {
+    this.isPausedForProcessing = true;
+    clearTimeout(this.restartTimeout);
+    if (this.recognition && this.isListening) {
+      try {
+        this.recognition.stop();
+      } catch {}
+    }
+    this.isListening = false;
+    this.callbacks.onListeningStateChange?.(false);
+  }
+
+  public resumeAfterProcessing() {
+    if (this.autoRestart) {
+      this.isPausedForProcessing = false;
+      this.startListening(true);
+    }
+  }
+
   public stopListening() {
     this.autoRestart = false;
+    this.isPausedForProcessing = false;
     clearTimeout(this.restartTimeout);
     if (!this.recognition) return;
     if (!this.isListening) return;
@@ -404,6 +440,9 @@ class SpeechService {
     try {
       this.recognition.stop();
     } catch {}
+
+    this.isListening = false;
+    this.callbacks.onListeningStateChange?.(false);
   }
 
   public async toggleListening(): Promise<boolean> {

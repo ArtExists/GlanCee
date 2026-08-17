@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AppMode, AppSettings, BoundingBox, IdentifiedCard, RecordedSession, SimulationPreset } from './types';
+import { AppMode, AppSettings, BoundingBox, IdentifiedCard, LookingAtFramingStyle, RecordedSession, SimulationPreset } from './types';
 import { TopBar } from './components/GlassesHUD/TopBar';
 import { ModeToggle } from './components/GlassesHUD/ModeToggle';
 import { CameraViewport } from './components/GlassesHUD/CameraViewport';
@@ -51,6 +51,7 @@ export const App: React.FC = () => {
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const [cachedSession, setCachedSession] = useState<RecordedSession | null>(null);
   const [isRecordingReadyOpen, setIsRecordingReadyOpen] = useState<boolean>(false);
+  const [framingStyle, setFramingStyle] = useState<LookingAtFramingStyle>('FINGERS_FRAME');
 
   // Settings loaded from localStorage
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -92,6 +93,7 @@ export const App: React.FC = () => {
       pipelineLockRef.current = true;
       const pipelineId = ++activePipelineIdRef.current;
       setIsProcessing(true);
+      speechService.pauseForProcessing();
 
       try {
         audioFX.playScanningSweep();
@@ -197,6 +199,7 @@ export const App: React.FC = () => {
       } finally {
         pipelineLockRef.current = false;
         setIsProcessing(false);
+        speechService.resumeAfterProcessing();
       }
     },
     [mode, settings.autoSpeak]
@@ -495,6 +498,7 @@ export const App: React.FC = () => {
           isProcessing={isProcessing}
           isSpeaking={isSpeaking}
           simulationImage={simulationImage}
+          framingStyle={framingStyle}
           onTargetDetected={(res) => {
             setCurrentDetection(res);
             if (res.box) lastBoxRef.current = res.box;
@@ -557,7 +561,12 @@ export const App: React.FC = () => {
 
         {/* Two Mode Toggles: "What I'm Holding" & "What I'm Looking At" */}
         <div className="w-full max-w-sm sm:max-w-md pointer-events-auto">
-          <ModeToggle currentMode={mode} onModeChange={(newMode) => setMode(newMode)} />
+          <ModeToggle
+            currentMode={mode}
+            onModeChange={(newMode) => setMode(newMode)}
+            framingStyle={framingStyle}
+            onFramingStyleChange={(style) => setFramingStyle(style)}
+          />
         </div>
       </div>
 

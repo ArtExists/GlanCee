@@ -1,14 +1,21 @@
 import React from 'react';
-import { AppMode } from '../../types';
-import { Hand, Eye } from 'lucide-react';
+import { AppMode, LookingAtFramingStyle } from '../../types';
+import { Hand, Eye, Scan, Maximize2 } from 'lucide-react';
 import { audioFX } from '../../services/audioEffects';
 
 interface ModeToggleProps {
   currentMode: AppMode;
   onModeChange: (mode: AppMode) => void;
+  framingStyle?: LookingAtFramingStyle;
+  onFramingStyleChange?: (style: LookingAtFramingStyle) => void;
 }
 
-export const ModeToggle: React.FC<ModeToggleProps> = ({ currentMode, onModeChange }) => {
+export const ModeToggle: React.FC<ModeToggleProps> = ({
+  currentMode,
+  onModeChange,
+  framingStyle = 'FINGERS_FRAME',
+  onFramingStyleChange,
+}) => {
   const handleSelect = (mode: AppMode) => {
     if (mode !== currentMode) {
       audioFX.playPinchTrigger?.();
@@ -16,8 +23,15 @@ export const ModeToggle: React.FC<ModeToggleProps> = ({ currentMode, onModeChang
     }
   };
 
+  const handleFramingSelect = (style: LookingAtFramingStyle) => {
+    if (style !== framingStyle) {
+      audioFX.playPinchTrigger?.();
+      onFramingStyleChange?.(style);
+    }
+  };
+
   return (
-    <div className="flex items-center justify-center p-1.5 rounded-2xl glass-panel-glow bg-black/60 border border-cyan-400/30 shadow-2xl backdrop-blur-2xl">
+    <div className="flex flex-col items-center justify-center p-1.5 rounded-2xl glass-panel-glow bg-black/60 border border-cyan-400/30 shadow-2xl backdrop-blur-2xl transition-all">
       <div className="grid grid-cols-2 gap-1.5 w-full max-w-sm sm:max-w-md">
         {/* Mode 1: What I'm Holding */}
         <button
@@ -51,6 +65,43 @@ export const ModeToggle: React.FC<ModeToggleProps> = ({ currentMode, onModeChang
           )}
         </button>
       </div>
+
+      {/* Sub-Toggle for "What I'm Looking At": 2-Hand Framing vs Reverse-Pinch */}
+      {currentMode === 'LOOKING_AT' && (
+        <div className="flex items-center justify-center gap-2 mt-2 pt-2 border-t border-emerald-500/20 w-full max-w-sm sm:max-w-md animate-fadeIn">
+          <span className="text-[10px] font-mono text-emerald-400/80 uppercase tracking-wider hidden xs:inline">
+            BOX METHOD:
+          </span>
+          <div className="flex items-center gap-1.5 bg-black/40 p-1 rounded-xl border border-white/5">
+            <button
+              onClick={() => handleFramingSelect('FINGERS_FRAME')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all ${
+                framingStyle === 'FINGERS_FRAME'
+                  ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/60 shadow-[0_0_10px_rgba(0,255,157,0.3)] font-bold'
+                  : 'text-slate-400 hover:text-slate-200 border border-transparent'
+              }`}
+              title="Frame with fingers from two hands (L-shapes)"
+            >
+              <Maximize2 className="w-3 h-3" />
+              <span>Fingers Frame (2-Hand)</span>
+            </button>
+
+            <button
+              onClick={() => handleFramingSelect('REVERSE_PINCH')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all ${
+                framingStyle === 'REVERSE_PINCH'
+                  ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/60 shadow-[0_0_10px_rgba(0,255,157,0.3)] font-bold'
+                  : 'text-slate-400 hover:text-slate-200 border border-transparent'
+              }`}
+              title="Reverse-pinch / spread thumb and index finger to create bounding box"
+            >
+              <Scan className="w-3 h-3" />
+              <span>Reverse-Pinch (1/2 Hand)</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

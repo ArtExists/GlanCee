@@ -1,4 +1,5 @@
 export type AppMode = 'HOLDING' | 'LOOKING_AT';
+export type LookingAtFramingStyle = 'FINGERS_FRAME' | 'REVERSE_PINCH';
 
 export interface Point2D {
   x: number; // 0 to 1 normalized
@@ -66,6 +67,7 @@ export interface AppSettings {
   autoCaptureStability: boolean; // Auto-trigger after ~1s stability
   showLandmarks: boolean;
   cameraFacingMode: 'user' | 'environment';
+  lookingAtFramingStyle?: LookingAtFramingStyle;
 }
 
 export interface SimulationPreset {

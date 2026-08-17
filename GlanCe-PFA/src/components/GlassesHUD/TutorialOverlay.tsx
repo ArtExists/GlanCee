@@ -58,7 +58,7 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({ isOpen, onClos
             <div>
               <h3 className="text-sm font-bold font-space text-white mb-1">2. "What I'm Looking At" Mode</h3>
               <p className="text-xs text-slate-300 font-sans leading-relaxed">
-                Form an "L" shape with thumb and index fingers on both hands to create a classic director's framing square around anything you want to inspect. The app tracks the bounding box across your fingertips.
+                Choose between <span className="text-emerald-300 font-mono">Fingers Frame</span> (two-hand L-corners) or <span className="text-emerald-300 font-mono">Reverse-Pinch</span> (spread thumb and index finger apart on one or both hands to define an aperture bounding box).
               </p>
             </div>
           </div>

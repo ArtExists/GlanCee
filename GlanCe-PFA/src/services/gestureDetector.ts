@@ -269,6 +269,145 @@ export class GestureDetector {
     };
   }
 
+  /**
+   * Mode: "What I'm Looking At" (Reverse-Pinch Option)
+   * Detects reverse-pinch / finger aperture gesture (thumb & index spreading apart).
+   * Supports both single-hand framing and dual-hand pinch apertures!
+   */
+  public processLookingAtReversePinch(
+    hands: HandLandmarkData[],
+    stabilityThresholdMs: number = 750
+  ): GestureDetectionResult {
+    if (!hands || hands.length === 0) {
+      this.reset();
+      return {
+        hasTarget: false,
+        box: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+        isStable: false,
+        stabilityProgress: 0,
+        handCount: 0,
+        confidence: 0.3,
+        message: 'Reverse-pinch: Spread thumb & index finger to frame object',
+      };
+    }
+
+    // 1. Single Hand Reverse-Pinch Framing
+    if (hands.length === 1) {
+      const lm = hands[0].landmarks;
+      if (lm.length < 21) {
+        return {
+          hasTarget: false,
+          box: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+          isStable: false,
+          stabilityProgress: 0,
+          handCount: 1,
+          confidence: 0.4,
+          message: 'Aligning hand tracking...',
+        };
+      }
+
+      const thumbTip = lm[4];
+      const indexTip = lm[8];
+
+      const pinchDist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+
+      // Require fingers to be expanded in a reverse-pinch aperture
+      if (pinchDist < 0.05) {
+        return {
+          hasTarget: false,
+          box: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+          isStable: false,
+          stabilityProgress: 0,
+          handCount: 1,
+          confidence: 0.5,
+          message: 'Spread thumb and index finger apart to define bounding box',
+        };
+      }
+
+      const minX = Math.min(thumbTip.x, indexTip.x);
+      const maxX = Math.max(thumbTip.x, indexTip.x);
+      const minY = Math.min(thumbTip.y, indexTip.y);
+      const maxY = Math.max(thumbTip.y, indexTip.y);
+
+      const spanW = Math.max(0.12, maxX - minX);
+      const spanH = Math.max(0.12, maxY - minY);
+
+      // Add generous 25% margin padding around the reverse-pinch aperture
+      const padW = spanW * 0.25;
+      const padH = spanH * 0.25;
+
+      const clampedX = Math.max(0.02, minX - padW);
+      const clampedY = Math.max(0.02, minY - padH);
+      const clampedW = Math.min(0.96 - clampedX, spanW + padW * 2);
+      const clampedH = Math.min(0.96 - clampedY, spanH + padH * 2);
+
+      const rawBox: BoundingBox = {
+        x: clampedX,
+        y: clampedY,
+        width: Math.max(0.20, clampedW),
+        height: Math.max(0.20, clampedH),
+      };
+
+      const smoothed = this.smoothBox(rawBox);
+      const { isStable, progress } = this.checkStability(smoothed, stabilityThresholdMs);
+
+      return {
+        hasTarget: true,
+        box: smoothed,
+        isStable,
+        stabilityProgress: progress,
+        handCount: 1,
+        confidence: 0.95,
+        message: isStable ? 'Reverse-pinch locked! Capturing...' : 'Hold reverse-pinch steady...',
+      };
+    }
+
+    // 2. Dual Hand Reverse-Pinch Framing
+    const hand1 = hands[0].landmarks;
+    const hand2 = hands[1].landmarks;
+
+    const points: Point2D[] = [hand1[4], hand1[8], hand2[4], hand2[8]];
+    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+
+    for (const pt of points) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+
+    const boxW = Math.max(0.15, maxX - minX);
+    const boxH = Math.max(0.15, maxY - minY);
+
+    const padW = boxW * 0.15;
+    const padH = boxH * 0.15;
+
+    const clampedX = Math.max(0.02, minX - padW);
+    const clampedY = Math.max(0.02, minY - padH);
+    const clampedW = Math.min(0.96 - clampedX, boxW + padW * 2);
+    const clampedH = Math.min(0.96 - clampedY, boxH + padH * 2);
+
+    const rawBox: BoundingBox = {
+      x: clampedX,
+      y: clampedY,
+      width: Math.max(0.25, clampedW),
+      height: Math.max(0.25, clampedH),
+    };
+
+    const smoothed = this.smoothBox(rawBox);
+    const { isStable, progress } = this.checkStability(smoothed, stabilityThresholdMs);
+
+    return {
+      hasTarget: true,
+      box: smoothed,
+      isStable,
+      stabilityProgress: progress,
+      handCount: 2,
+      confidence: 0.95,
+      message: isStable ? 'Dual pinch locked! Capturing...' : 'Hold pinch frame steady...',
+    };
+  }
+
   private smoothBox(newBox: BoundingBox): BoundingBox {
     if (!this.smoothedBox) {
       this.smoothedBox = { ...newBox };

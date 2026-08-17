@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AppMode, BoundingBox, HandLandmarkData, IdentifiedCard } from '../../types';
+import { AppMode, BoundingBox, HandLandmarkData, IdentifiedCard, LookingAtFramingStyle } from '../../types';
 import { gestureDetector, GestureDetectionResult } from '../../services/gestureDetector';
 import { audioFX } from '../../services/audioEffects';
 
@@ -12,6 +12,7 @@ interface CameraViewportProps {
   isProcessing: boolean;
   isSpeaking: boolean;
   simulationImage: string | null;
+  framingStyle?: LookingAtFramingStyle;
   onTargetDetected?: (res: GestureDetectionResult) => void;
 }
 
@@ -24,6 +25,7 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
   isProcessing,
   isSpeaking,
   simulationImage,
+  framingStyle = 'FINGERS_FRAME',
   onTargetDetected,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -42,10 +44,15 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
   const isProcessingRef = useRef<boolean>(isProcessing);
   const isSpeakingRef = useRef<boolean>(isSpeaking);
   const modeRef = useRef<AppMode>(mode);
+  const framingStyleRef = useRef<LookingAtFramingStyle>(framingStyle);
   const cardsRef = useRef<IdentifiedCard[]>(cards);
   const onAutoCaptureRef = useRef(onAutoCapture);
   const onTargetDetectedRef = useRef(onTargetDetected);
   const simulationImageRef = useRef(simulationImage);
+
+  useEffect(() => {
+    framingStyleRef.current = framingStyle;
+  }, [framingStyle]);
 
   useEffect(() => {
     isProcessingRef.current = isProcessing;
@@ -154,6 +161,8 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
           const currentMode = modeRef.current;
           if (currentMode === 'HOLDING') {
             detection = gestureDetector.processHoldingMode(handsData, 1000);
+          } else if (framingStyleRef.current === 'REVERSE_PINCH') {
+            detection = gestureDetector.processLookingAtReversePinch(handsData, 750);
           } else {
             detection = gestureDetector.processLookingAtMode(handsData, 750);
           }
@@ -366,6 +375,8 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
         // 5. Header Tag Pill
         const tagText = isHolding
           ? `HOLDING ROI [${Math.round((detection?.confidence || 0.9) * 100)}%]`
+          : framingStyleRef.current === 'REVERSE_PINCH'
+          ? `REVERSE-PINCH ROI [${Math.round((detection?.confidence || 0.95) * 100)}%]`
           : `FRAMING SQUARE [${Math.round((detection?.confidence || 0.95) * 100)}%]`;
 
         ctx.font = '10px "JetBrains Mono", monospace';
