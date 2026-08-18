@@ -526,7 +526,7 @@ export const App: React.FC = () => {
       ))}
 
       {/* 5. Bottom Controls: Dual Mode Toggle & Tactile Capture Shutter */}
-      <div className="absolute bottom-0 left-0 right-0 z-40 p-4 pb-6 sm:pb-8 flex flex-col items-center gap-3 pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 z-40 px-3 sm:px-4 pb-safe pb-2 sm:pb-6 flex flex-col items-center gap-2 sm:gap-3 pointer-events-none">
         {/* Shutter Button with status pill */}
         <ManualTriggerButton
           isProcessing={isProcessing}
@@ -535,7 +535,7 @@ export const App: React.FC = () => {
         />
 
         {/* Two Mode Toggles: "What I'm Holding" & "What I'm Looking At" */}
-        <div className="w-full max-w-sm sm:max-w-md pointer-events-auto">
+        <div className="w-full max-w-[340px] sm:max-w-md pointer-events-auto">
           <ModeToggle
             currentMode={mode}
             onModeChange={(newMode) => setMode(newMode)}

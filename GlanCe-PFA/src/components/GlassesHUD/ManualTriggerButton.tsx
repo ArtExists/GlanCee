@@ -15,6 +15,13 @@ export const ManualTriggerButton: React.FC<ManualTriggerButtonProps> = ({
 }) => {
   const handleClick = () => {
     if (isProcessing) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+    } catch {
+      // ignore
+    }
     audioFX.playTargetLock?.();
     onTriggerCapture();
   };

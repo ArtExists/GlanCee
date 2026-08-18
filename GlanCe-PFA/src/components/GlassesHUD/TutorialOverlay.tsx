@@ -11,17 +11,17 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({ isOpen, onClos
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fadeIn">
-      <div className="glass-panel-glow bg-[#080d1a]/95 rounded-3xl w-full max-w-lg p-6 border border-cyan-400/40 text-slate-100 shadow-2xl overflow-hidden relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/85 backdrop-blur-xl animate-fadeIn">
+      <div className="glass-panel-glow bg-[#080d1a]/95 rounded-3xl w-full max-w-lg p-4 sm:p-6 border border-cyan-400/40 text-slate-100 shadow-2xl overflow-hidden relative max-h-[90dvh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-5">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
-              <Sparkles className="w-5 h-5" />
+        <div className="flex items-center justify-between pb-3 sm:pb-4 border-b border-white/10 mb-4 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            <div className="p-1.5 sm:p-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
+              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold font-space text-white">How Glance Works</h2>
-              <p className="text-xs text-slate-400 font-sans">Hands-free smart-glasses visual interaction</p>
+              <h2 className="text-base sm:text-lg font-bold font-space text-white">How Glance Works</h2>
+              <p className="text-[11px] sm:text-xs text-slate-400 font-sans">Hands-free smart-glasses visual interaction</p>
             </div>
           </div>
           <button
@@ -36,7 +36,7 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({ isOpen, onClos
         </div>
 
         {/* 3 Core Interactions */}
-        <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+        <div className="space-y-3 sm:space-y-4 overflow-y-auto pr-1 flex-1">
           {/* Interaction 1: What I'm Holding */}
           <div className="bg-black/40 p-4 rounded-2xl border border-white/10 flex gap-3.5 items-start">
             <div className="p-2.5 rounded-xl bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 shrink-0 mt-0.5">

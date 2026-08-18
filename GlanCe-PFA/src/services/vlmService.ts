@@ -48,17 +48,19 @@ export class VLMService {
   }
 
   /**
-   * Helper to perform fetch with local Vite proxy fallback (bypasses browser CORS)
+   * Helper to perform fetch with local Vite/Vercel proxy fallback (bypasses browser CORS & ignores SPA HTML fallbacks)
    */
   private async fetchWithProxyFallback(
     proxyPath: string,
     directUrl: string,
     options: RequestInit
   ): Promise<Response> {
-    // 1. Try local dev proxy endpoint first (avoids browser CORS)
+    // 1. Try local dev/Vercel proxy endpoint first (avoids browser CORS)
     try {
       const proxyRes = await fetch(proxyPath, options);
-      if (proxyRes.status !== 404 && proxyRes.status !== 502) {
+      const contentType = proxyRes.headers.get('content-type') || '';
+      // If proxy route exists, answered, and is NOT a catch-all index.html page (Vercel SPA rewrite)
+      if (proxyRes.status !== 404 && proxyRes.status !== 502 && !contentType.includes('text/html')) {
         return proxyRes;
       }
     } catch {

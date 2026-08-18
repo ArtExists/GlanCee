@@ -1,6 +1,38 @@
 {
   "rewrites": [
     {
+      "source": "/api/hf-proxy/:match*",
+      "destination": "https://router.huggingface.co/:match*"
+    },
+    {
+      "source": "/api/hf-api-proxy/:match*",
+      "destination": "https://api-inference.huggingface.co/:match*"
+    },
+    {
+      "source": "/api/openrouter-proxy/:match*",
+      "destination": "https://openrouter.ai/:match*"
+    },
+    {
+      "source": "/api/dashscope-proxy/:match*",
+      "destination": "https://dashscope.aliyuncs.com/:match*"
+    },
+    {
+      "source": "/api/mistral-proxy/:match*",
+      "destination": "https://api.mistral.ai/:match*"
+    },
+    {
+      "source": "/api/anthropic-proxy/:match*",
+      "destination": "https://api.anthropic.com/:match*"
+    },
+    {
+      "source": "/api/groq-proxy/:match*",
+      "destination": "https://api.groq.com/:match*"
+    },
+    {
+      "source": "/api/openai-proxy/:match*",
+      "destination": "https://api.openai.com/:match*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

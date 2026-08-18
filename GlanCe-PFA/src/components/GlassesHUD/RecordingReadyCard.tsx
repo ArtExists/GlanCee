@@ -42,8 +42,8 @@ export const RecordingReadyCard: React.FC<RecordingReadyCardProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/70 backdrop-blur-md animate-fadeIn">
-      <div className="glass-panel-glow relative w-full max-w-lg rounded-3xl p-5 sm:p-6 text-slate-100 border border-cyan-400/40 shadow-2xl bg-[#060b18]/95 overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn">
+      <div className="glass-panel-glow relative w-full max-w-lg rounded-3xl p-4 sm:p-6 text-slate-100 border border-cyan-400/40 shadow-2xl bg-[#060b18]/95 overflow-y-auto max-h-[92dvh]">
         {/* Glow Accent */}
         <div className="absolute -right-16 -top-16 w-40 h-40 bg-cyan-500/15 rounded-full blur-3xl pointer-events-none" />
 

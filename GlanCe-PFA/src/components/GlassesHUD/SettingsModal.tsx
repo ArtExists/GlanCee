@@ -85,17 +85,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-fadeIn">
-      <div className="glass-panel-glow bg-[#080d1a]/95 rounded-3xl w-full max-w-lg p-6 border border-cyan-400/40 text-slate-100 shadow-2xl overflow-hidden relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/85 backdrop-blur-xl animate-fadeIn">
+      <div className="glass-panel-glow bg-[#080d1a]/95 rounded-3xl w-full max-w-lg p-4 sm:p-6 border border-cyan-400/40 text-slate-100 shadow-2xl overflow-hidden relative max-h-[90dvh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-5">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
-              <Sliders className="w-5 h-5" />
+        <div className="flex items-center justify-between pb-3 sm:pb-4 border-b border-white/10 mb-4 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            <div className="p-1.5 sm:p-2 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
+              <Sliders className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold font-space text-white">HUD Settings & Models</h2>
-              <p className="text-xs text-slate-400 font-sans">
+              <h2 className="text-base sm:text-lg font-bold font-space text-white">HUD Settings & Models</h2>
+              <p className="text-[11px] sm:text-xs text-slate-400 font-sans">
                 Primary VLM: <strong className="text-cyan-300">Qwen 2.5-VL 3B Instruct</strong>
               </p>
             </div>
@@ -112,7 +112,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Scrollable Content */}
-        <div className="space-y-5 max-h-[70vh] overflow-y-auto pr-1">
+        <div className="space-y-4 sm:space-y-5 overflow-y-auto pr-1 flex-1">
           {/* Key Summary Notice */}
           <div className="bg-cyan-500/10 border border-cyan-400/30 p-3.5 rounded-2xl text-xs space-y-1.5">
             <div className="font-space font-bold text-cyan-300 flex items-center gap-1.5">

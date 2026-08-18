@@ -38,10 +38,11 @@ export const AnchoredCard: React.FC<AnchoredCardProps> = ({
     setIsExpanded(!isExpanded);
   };
 
-  // Calculate screen anchor position near the bounding box
+  // Calculate screen anchor position near the bounding box on desktop
   const box = card.box;
-  const leftPercent = Math.min(65, Math.max(5, (box.x + box.width) * 100));
-  const topPercent = Math.min(65, Math.max(12, box.y * 100 + index * 6));
+  const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 640;
+  const leftPercent = Math.min(60, Math.max(5, (box.x + box.width) * 100));
+  const topPercent = Math.min(60, Math.max(12, box.y * 100 + index * 6));
 
   const confidenceBadgeStyles = {
     high: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
@@ -51,13 +52,8 @@ export const AnchoredCard: React.FC<AnchoredCardProps> = ({
 
   return (
     <div
-      className="absolute z-30 transition-all duration-300 ease-out pointer-events-auto"
-      style={{
-        left: `${leftPercent}%`,
-        top: `${topPercent}%`,
-        maxWidth: '380px',
-        width: 'calc(100vw - 32px)',
-      }}
+      className="fixed sm:absolute z-30 transition-all duration-300 ease-out pointer-events-auto bottom-[170px] sm:bottom-auto left-3 right-3 sm:left-auto sm:right-auto sm:w-[380px] max-w-[420px] mx-auto sm:mx-0 max-h-[52vh] sm:max-h-[80vh] overflow-y-auto"
+      style={isDesktop ? { left: `${leftPercent}%`, top: `${topPercent}%` } : {}}
     >
       {/* Visual Anchor Indicator Pointer */}
       <div className="relative">
