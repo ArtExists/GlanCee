@@ -14,6 +14,11 @@ export interface CompositorRenderState {
   cards: IdentifiedCard[];
   speakingCardId: string | null;
   isProcessing: boolean;
+  includeHUDOverlay?: boolean;
+  isRecording?: boolean;
+  recordingDuration?: number;
+  hasActiveRecognition?: boolean;
+  stopClickedTimestamp?: number | null;
 }
 
 export class RecordingCompositor {
@@ -31,6 +36,11 @@ export class RecordingCompositor {
     cards: [],
     speakingCardId: null,
     isProcessing: false,
+    includeHUDOverlay: true,
+    isRecording: true,
+    recordingDuration: 0,
+    hasActiveRecognition: false,
+    stopClickedTimestamp: null,
   };
 
   constructor(width: number = 1280, height: number = 720) {
@@ -101,8 +111,12 @@ export class RecordingCompositor {
     // 4. Draw Floating Popups as Vector Canvas Graphics
     this.drawPopupCards(ctx, width, height, state);
 
-    // 5. Draw Top Status & Recording Watermark
-    this.drawARWatermark(ctx, width, height, state);
+    // 5. Draw Top Status, Full UI Controls, & Stop Action Indicators (if enabled)
+    if (state.includeHUDOverlay !== false) {
+      this.drawFullHUDControls(ctx, width, height, state);
+    } else {
+      this.drawARWatermark(ctx, width, height, state);
+    }
   }
 
   private drawSourceFeed(
@@ -457,6 +471,155 @@ export class RecordingCompositor {
 
       ctx.restore();
     });
+  }
+
+  private drawFullHUDControls(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    state: CompositorRenderState
+  ) {
+    ctx.save();
+
+    const now = Date.now();
+
+    // 1. Top-Left: Brand & Live HUD status
+    ctx.fillStyle = 'rgba(5, 7, 13, 0.75)';
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.4)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(16, 16, 150, 32, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    // Glowing cyan dot
+    ctx.fillStyle = '#00f0ff';
+    ctx.beginPath();
+    ctx.arc(32, 32, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.font = 'bold 12px "Space Grotesk", sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('GLANCE', 42, 36);
+
+    ctx.font = '10px "Space Mono", monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('AR v1.0', 98, 36);
+
+    // 2. Live REC Timer Badge (Top Left next to brand)
+    const duration = state.recordingDuration || 0;
+    const mins = Math.floor(duration / 60).toString().padStart(2, '0');
+    const secs = (duration % 60).toString().padStart(2, '0');
+    const recTimeStr = `REC ${mins}:${secs}`;
+
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+    ctx.beginPath();
+    ctx.roundRect(174, 16, 95, 32, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    // Blinking red dot
+    const blink = Math.floor(now / 500) % 2 === 0;
+    ctx.fillStyle = blink ? '#ef4444' : 'rgba(239, 68, 68, 0.3)';
+    ctx.beginPath();
+    ctx.arc(188, 32, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.font = 'bold 11px "Space Mono", monospace';
+    ctx.fillStyle = '#fca5a5';
+    ctx.fillText(recTimeStr, 198, 36);
+
+    // 3. Top-Right: STOP Button Graphic & Status
+    const hasActive = state.hasActiveRecognition || (state.cards && state.cards.length > 0) || state.isProcessing;
+    const stopBtnW = 90;
+    const stopBtnX = width - stopBtnW - 16;
+
+    ctx.fillStyle = hasActive ? 'rgba(244, 63, 94, 0.35)' : 'rgba(255, 255, 255, 0.08)';
+    ctx.strokeStyle = hasActive ? 'rgba(244, 63, 94, 0.8)' : 'rgba(255, 255, 255, 0.2)';
+    ctx.beginPath();
+    ctx.roundRect(stopBtnX, 16, stopBtnW, 32, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = 'bold 11px "Space Mono", monospace';
+    ctx.fillStyle = hasActive ? '#fecdd3' : '#94a3b8';
+    ctx.fillText('🛑 STOP', stopBtnX + 16, 36);
+
+    // 4. STOP CLICKED FLASH BANNER (shows when user triggered STOP)
+    if (state.stopClickedTimestamp && now - state.stopClickedTimestamp < 2200) {
+      const elapsed = now - state.stopClickedTimestamp;
+      const alpha = Math.max(0, 1 - elapsed / 2200);
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      const bannerW = 280;
+      const bannerX = (width - bannerW) / 2;
+      ctx.fillStyle = 'rgba(225, 29, 72, 0.9)';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(bannerX, 60, bannerW, 36, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.font = 'bold 12px "Space Grotesk", sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.fillText('🛑 STOP RECOGNITION TRIGGERED', width / 2, 83);
+      ctx.restore();
+    }
+
+    // 5. Processing Badge (Top Center)
+    if (state.isProcessing) {
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.3)';
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
+      const procW = 180;
+      const procX = (width - procW) / 2;
+      ctx.beginPath();
+      ctx.roundRect(procX, 16, procW, 32, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.font = 'bold 11px "Space Mono", monospace';
+      ctx.fillStyle = '#fde68a';
+      ctx.textAlign = 'center';
+      ctx.fillText('✨ ANALYZING TARGET...', width / 2, 36);
+    }
+
+    // 6. Bottom-Left Mode Indicator Pill
+    const modeLabel = state.mode === 'HOLDING' ? "MODE: WHAT I'M HOLDING" : "MODE: WHAT I'M LOOKING AT";
+    const modeColor = state.mode === 'HOLDING' ? '#00f0ff' : '#00ff9d';
+    const modeBg = state.mode === 'HOLDING' ? 'rgba(0, 240, 255, 0.2)' : 'rgba(0, 255, 157, 0.2)';
+    const modeBorder = state.mode === 'HOLDING' ? 'rgba(0, 240, 255, 0.5)' : 'rgba(0, 255, 157, 0.5)';
+
+    ctx.fillStyle = modeBg;
+    ctx.strokeStyle = modeBorder;
+    ctx.beginPath();
+    ctx.roundRect(16, height - 48, 220, 32, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = 'bold 10px "Space Mono", monospace';
+    ctx.fillStyle = modeColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(modeLabel, 26, height - 28);
+
+    // 7. Bottom-Right Tactile Shutter HUD Graphic
+    const shutterX = width - 110;
+    const shutterY = height - 48;
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.2)';
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.6)';
+    ctx.beginPath();
+    ctx.roundRect(shutterX, shutterY, 94, 32, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = 'bold 10px "Space Mono", monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('📷 CAPTURE', shutterX + 12, height - 28);
+
+    ctx.restore();
   }
 
   private drawARWatermark(

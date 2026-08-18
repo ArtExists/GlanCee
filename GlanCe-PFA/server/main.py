@@ -213,17 +213,56 @@ async def identify_object(req: IdentifyRequest):
         f"You are the visual cortex for AR Smart Glasses. {mode_context}\n"
         "Task: Accurately identify the main physical object, device, item, or subject shown in this image.\n\n"
         "Instructions:\n"
-        "1. Accurately name the object category (e.g. Smartphone, Coffee Mug, Laptop, Wristwatch, Pen, Water Bottle, Book, Plant, Monitor, Eyeglasses, Keyboard, Backpack, Apple, Headphones).\n"
-        "2. If the user query is specific, include the requested brand, model, or characteristic.\n"
+        "1. Identify the broad, basic category of the physical object. Keep the name simple, broad, and concise (e.g. 'Watch' instead of 'Wristwatch' or 'Smartwatch', 'Phone' instead of 'Smartphone' or 'iPhone', 'Bottle' instead of 'Water bottle', 'Cup' or 'Mug', 'Pen', 'Book', 'Laptop', 'Headphones', 'Keyboard', 'Mouse', 'Plant', 'Glasses', 'Chair', 'Backpack', 'Remote').\n"
+        "2. Do NOT over-specify brand names, model numbers, or compound adjectives in the main label unless the user query specifically asks for it.\n"
         "3. Only if the view is purely a bare empty hand with no item or a totally empty blank background, return has_object: false and label: 'No Object Detected'.\n\n"
         "Format response STRICTLY as valid JSON with no markdown formatting:\n"
         "{\n"
         '  "has_object": true,\n'
-        '  "label": "Primary object class name",\n'
+        '  "label": "Primary object class name (e.g. Watch, Phone, Mug, Bottle, Book, Plant)",\n'
         '  "confidence": "high",\n'
         '  "search_query": "Standard Wikipedia article title for this object"\n'
         "}"
     )
+
+    def simplify_label(raw: str) -> str:
+        if not raw:
+            return "Object"
+        clean = raw.strip()
+        lower = clean.lower()
+        if any(w in lower for w in ["smartwatch", "wristwatch", "wrist watch", "smart watch", "pocket watch", "analog watch", "digital watch", "apple watch"]) or lower == "timepiece":
+            return "Watch"
+        if any(w in lower for w in ["smartphone", "smart phone", "cell phone", "cellphone", "mobile phone", "iphone", "android phone", "telephone"]):
+            return "Phone"
+        if any(w in lower for w in ["coffee mug", "tea mug", "ceramic mug", "travel mug"]):
+            return "Mug"
+        if any(w in lower for w in ["coffee cup", "tea cup", "paper cup", "plastic cup", "drinking cup"]):
+            return "Cup"
+        if any(w in lower for w in ["water bottle", "plastic bottle", "glass bottle", "beverage bottle", "vacuum flask", "thermos", "hydro flask"]):
+            return "Bottle"
+        if any(w in lower for w in ["reading glasses", "eye glasses", "eyeglasses", "sunglasses", "sun glasses", "spectacles"]):
+            return "Glasses"
+        if any(w in lower for w in ["computer keyboard", "mechanical keyboard", "wireless keyboard", "bluetooth keyboard"]):
+            return "Keyboard"
+        if any(w in lower for w in ["computer mouse", "wireless mouse", "optical mouse"]):
+            return "Mouse"
+        if any(w in lower for w in ["laptop computer", "notebook computer", "macbook", "thinkpad"]):
+            return "Laptop"
+        if any(w in lower for w in ["audio headphones", "wireless headphones", "over-ear headphones", "earphones", "earbuds", "airpods"]):
+            return "Headphones"
+        if any(w in lower for w in ["house plant", "potted plant", "indoor plant", "houseplant", "succulent plant"]):
+            return "Plant"
+        if any(w in lower for w in ["ballpoint pen", "fountain pen", "gel pen", "marker pen"]):
+            return "Pen"
+        if any(w in lower for w in ["computer monitor", "display monitor", "lcd monitor", "led monitor"]):
+            return "Monitor"
+        if any(w in lower for w in ["remote control", "tv remote"]):
+            return "Remote"
+        if any(w in lower for w in ["school backpack", "travel backpack", "book bag", "rucksack"]):
+            return "Backpack"
+        if any(w in lower for w in ["office chair", "desk chair", "armchair"]):
+            return "Chair"
+        return clean.title()
 
     def format_vlm_output(parsed: dict, provider: str) -> dict:
         label = ""
@@ -275,12 +314,14 @@ async def identify_object(req: IdentifyRequest):
         elif not has_object and normalized in ["hand", "palm", "background", "empty"]:
             is_no_obj = True
 
+        simplified = simplify_label(label) if not is_no_obj else "No Object Detected"
+
         search_query = (
             parsed.get("search_query")
             or parsed.get("searchQuery")
             or parsed.get("wiki_title")
             or parsed.get("wikipedia_title")
-            or label
+            or simplified
             or "Object"
         )
 
@@ -295,7 +336,7 @@ async def identify_object(req: IdentifyRequest):
         else:
             result = {
                 "has_object": True,
-                "label": label,
+                "label": simplified,
                 "confidence": parsed.get("confidence", "high") or "high",
                 "search_query": str(search_query).strip(),
                 "provider": provider,

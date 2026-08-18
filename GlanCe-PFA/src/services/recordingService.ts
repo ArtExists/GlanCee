@@ -105,15 +105,15 @@ class RecordingService {
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
+          echoCancellation: false, // Do NOT cancel out device speaker audio / AI narrator voice!
+          noiseSuppression: false,  // Preserve high-frequency fidelity of AI speech & sound FX
           autoGainControl: true,
         },
       });
 
       this.micSourceNode = this.audioCtx.createMediaStreamSource(this.micStream);
       this.micGainNode = this.audioCtx.createGain();
-      this.micGainNode.gain.value = 1.0;
+      this.micGainNode.gain.value = 1.3; // Clean boost for speech & narrator audio
 
       this.micSourceNode.connect(this.micGainNode);
       this.micGainNode.connect(this.audioDestinationNode);

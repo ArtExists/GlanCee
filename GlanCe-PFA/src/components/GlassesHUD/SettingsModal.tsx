@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AppSettings } from '../../types';
-import { X, Key, Volume2, Sliders, ShieldCheck, Sparkles, Check, Server, Mic } from 'lucide-react';
+import { X, Key, Volume2, Sliders, ShieldCheck, Sparkles, Check, Server, Mic, Video } from 'lucide-react';
 import { audioFX } from '../../services/audioEffects';
 import { vlmService } from '../../services/vlmService';
 
@@ -389,6 +389,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
           </form>
+
+          {/* Video Recording & AR HUD Overlay Settings */}
+          <div className="bg-black/40 p-4 rounded-2xl border border-white/10 space-y-3.5">
+            <div className="flex items-center gap-2 text-xs font-mono text-cyan-300 uppercase tracking-wider">
+              <Video className="w-4 h-4 text-cyan-300" />
+              <span>AR Session Recording & HUD Overlay</span>
+            </div>
+
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <div className="text-xs text-slate-200 font-medium">Bake HUD Overlay into Video</div>
+                <div className="text-[10px] text-slate-400">
+                  Records full UI, brand status, mode reticles, and STOP click indicators directly into the saved session.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.includeHUDInRecording !== false}
+                onChange={(e) => onUpdateSettings({ includeHUDInRecording: e.target.checked })}
+                className="accent-cyan-400 w-4 h-4 rounded ml-3"
+              />
+            </label>
+          </div>
 
           {/* Voice & Calm Narrator Settings */}
           <div className="bg-black/40 p-4 rounded-2xl border border-white/10 space-y-3.5">

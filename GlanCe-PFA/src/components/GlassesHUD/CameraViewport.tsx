@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AppMode, BoundingBox, HandLandmarkData, IdentifiedCard, LookingAtFramingStyle } from '../../types';
 import { gestureDetector, GestureDetectionResult } from '../../services/gestureDetector';
 import { audioFX } from '../../services/audioEffects';
+import { speechService } from '../../services/speechService';
 
 interface CameraViewportProps {
   mode: AppMode;
@@ -171,10 +172,21 @@ export const CameraViewport: React.FC<CameraViewportProps> = ({
           onTargetDetectedRef.current?.(detection);
 
           // Check for auto-capture trigger on stability:
-          // CRITICAL: DO NOT detect new objects when one is being processed OR speaking!
+          // CRITICAL: DO NOT detect new objects when one is being processed OR speaking OR card is active!
           const now = Date.now();
-          const isBusy = isProcessingRef.current || isSpeakingRef.current;
-          const hasCooldownPassed = now - lastCaptureTimeRef.current > 5000; // 5s cooldown
+          const isBusy =
+            isProcessingRef.current ||
+            isSpeakingRef.current ||
+            cardsRef.current.length > 0 ||
+            speechService.isVoiceSpeaking();
+
+          if (isBusy) {
+            // Suppress gesture accumulation while explaining an object
+            gestureDetector.reset();
+            lastCaptureTimeRef.current = now;
+          }
+
+          const hasCooldownPassed = now - lastCaptureTimeRef.current > 3000; // 3s cooldown after finishing
 
           if (
             detection.hasTarget &&

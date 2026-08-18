@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoCaptureStability: true,
   showLandmarks: false,
   cameraFacingMode: 'environment',
+  includeHUDInRecording: true,
 };
 
 export const App: React.FC = () => {
@@ -77,6 +78,7 @@ export const App: React.FC = () => {
   const [cachedSession, setCachedSession] = useState<RecordedSession | null>(null);
   const [isRecordingReadyOpen, setIsRecordingReadyOpen] = useState<boolean>(false);
   const [framingStyle, setFramingStyle] = useState<LookingAtFramingStyle>('FINGERS_FRAME');
+  const stopClickedTimestampRef = useRef<number | null>(null);
 
   // Settings loaded from localStorage with .env fallback
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -93,6 +95,7 @@ export const App: React.FC = () => {
           geminiApiKey: parsed.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
           openaiApiKey: parsed.openaiApiKey || DEFAULT_SETTINGS.openaiApiKey,
           groqApiKey: parsed.groqApiKey || DEFAULT_SETTINGS.groqApiKey,
+          includeHUDInRecording: parsed.includeHUDInRecording !== undefined ? parsed.includeHUDInRecording : true,
         };
       }
       return DEFAULT_SETTINGS;
@@ -222,23 +225,37 @@ export const App: React.FC = () => {
         // 6. Speak aloud via Calm Narrator if enabled, and auto-dismiss when description is over
         if (settings.autoSpeak) {
           setSpeakingCardId(newCard.id);
+          setIsSpeaking(true);
           speechService.speak(narratorAnswers.shortAnswer, () => {
             setSpeakingCardId(null);
+            setIsSpeaking(false);
             // Gracefully dismiss popup card 1.5s after description finishes
             setTimeout(() => {
-              setCards((prev) => prev.filter((c) => c.id !== newCard.id));
+              setCards((prev) => {
+                const remaining = prev.filter((c) => c.id !== newCard.id);
+                if (remaining.length === 0) {
+                  pipelineLockRef.current = false;
+                }
+                return remaining;
+              });
             }, 1500);
           });
         } else {
           // If autoSpeak is disabled, auto-dismiss after reading timeout
           setTimeout(() => {
-            setCards((prev) => prev.filter((c) => c.id !== newCard.id));
+            setCards((prev) => {
+              const remaining = prev.filter((c) => c.id !== newCard.id);
+              if (remaining.length === 0) {
+                pipelineLockRef.current = false;
+              }
+              return remaining;
+            });
           }, 6000);
         }
       } catch (error) {
         console.error('Identification pipeline error:', error);
-      } finally {
         pipelineLockRef.current = false;
+      } finally {
         setIsProcessing(false);
         speechService.resumeAfterProcessing();
       }
@@ -249,17 +266,23 @@ export const App: React.FC = () => {
   // Auto-capture triggered from stability in CameraViewport
   const handleAutoCapture = useCallback(
     (box: BoundingBox, source: HTMLVideoElement | HTMLImageElement) => {
-      if (settings.autoCaptureStability && !pipelineLockRef.current && !isSpeaking) {
+      if (
+        settings.autoCaptureStability &&
+        !pipelineLockRef.current &&
+        !isSpeaking &&
+        cards.length === 0 &&
+        !speechService.isVoiceSpeaking()
+      ) {
         executeIdentificationPipeline(box, source);
       }
     },
-    [settings.autoCaptureStability, isSpeaking, executeIdentificationPipeline]
+    [settings.autoCaptureStability, isSpeaking, cards.length, executeIdentificationPipeline]
   );
 
   // Manual Trigger Button or Tap Capture
   const handleManualCapture = useCallback(
     (hintQuery?: string) => {
-      if (pipelineLockRef.current) return;
+      if (pipelineLockRef.current || isProcessing) return;
 
       const box = currentDetection?.box || lastBoxRef.current;
       const source =
@@ -270,10 +293,10 @@ export const App: React.FC = () => {
         executeIdentificationPipeline(box, source, hintQuery);
       }
     },
-    [currentDetection, executeIdentificationPipeline]
+    [currentDetection, isProcessing, executeIdentificationPipeline]
   );
 
-  // Setup Speech Output Callbacks (Voice commands removed for now)
+  // Setup Speech Output Callbacks
   useEffect(() => {
     speechService.setCallbacks({
       onSpeakingStateChange: (speaking) => setIsSpeaking(speaking),
@@ -286,11 +309,13 @@ export const App: React.FC = () => {
 
   // Manual Stop Recognition (cancels in-flight pipeline, speech, and clears cards)
   const handleManualStopRecognition = useCallback(() => {
+    stopClickedTimestampRef.current = Date.now();
     activePipelineIdRef.current = 0;
     pipelineLockRef.current = false;
     setIsProcessing(false);
     speechService.stopSpeaking();
     setSpeakingCardId(null);
+    setIsSpeaking(false);
     setCards([]);
     gestureDetector.reset();
     audioFX.playPinchTrigger?.();
@@ -299,26 +324,45 @@ export const App: React.FC = () => {
   // Card Speech controls
   const handlePlayVoice = (card: IdentifiedCard) => {
     setSpeakingCardId(card.id);
+    setIsSpeaking(true);
+    pipelineLockRef.current = true;
     speechService.speak(card.shortAnswer, () => {
       setSpeakingCardId(null);
+      setIsSpeaking(false);
       setTimeout(() => {
-        setCards((prev) => prev.filter((c) => c.id !== card.id));
+        setCards((prev) => {
+          const remaining = prev.filter((c) => c.id !== card.id);
+          if (remaining.length === 0) {
+            pipelineLockRef.current = false;
+          }
+          return remaining;
+        });
       }, 1500);
     });
   };
 
   const handleStopVoice = () => {
+    stopClickedTimestampRef.current = Date.now();
     speechService.stopSpeaking();
     setSpeakingCardId(null);
+    setIsSpeaking(false);
     setCards([]);
+    pipelineLockRef.current = false;
   };
 
   const handleDismissCard = (id: string) => {
     if (speakingCardId === id) {
       speechService.stopSpeaking();
       setSpeakingCardId(null);
+      setIsSpeaking(false);
     }
-    setCards((prev) => prev.filter((c) => c.id !== id));
+    setCards((prev) => {
+      const remaining = prev.filter((c) => c.id !== id);
+      if (remaining.length === 0) {
+        pipelineLockRef.current = false;
+      }
+      return remaining;
+    });
   };
 
   // Preset Scenario Selection
@@ -377,17 +421,25 @@ export const App: React.FC = () => {
         cards,
         speakingCardId,
         isProcessing,
+        includeHUDOverlay: settings.includeHUDInRecording !== false,
+        isRecording,
+        recordingDuration,
+        hasActiveRecognition: isProcessing || isSpeaking || cards.length > 0,
+        stopClickedTimestamp: stopClickedTimestampRef.current,
       });
     }
   }, [
     isRecording,
+    recordingDuration,
     mode,
     settings.cameraFacingMode,
     settings.showLandmarks,
+    settings.includeHUDInRecording,
     currentDetection,
     cards,
     speakingCardId,
     isProcessing,
+    isSpeaking,
     simulationImage,
   ]);
 
@@ -511,6 +563,32 @@ export const App: React.FC = () => {
         hasCustomKey={!!(settings.mistralApiKey || settings.anthropicApiKey || settings.geminiApiKey || settings.openaiApiKey || settings.groqApiKey)}
       />
 
+      {/* 3. Floating Side Controls: Quick Toggle Recording HUD */}
+      <div className="absolute right-2.5 sm:right-4 top-16 sm:top-20 z-40 pointer-events-auto flex flex-col items-end gap-1.5">
+        <button
+          onClick={() => {
+            setSettings((s) => ({
+              ...s,
+              includeHUDInRecording: s.includeHUDInRecording === false ? true : false,
+            }));
+            audioFX.playPinchTrigger?.();
+          }}
+          title="Toggle whether AR reticles, status cards, and STOP indicators are baked into the video recording"
+          className={`px-2.5 py-1.5 rounded-xl border backdrop-blur-md text-[10px] font-mono flex items-center gap-1.5 transition-all shadow-lg active:scale-95 ${
+            settings.includeHUDInRecording !== false
+              ? 'bg-cyan-950/70 border-cyan-400/50 text-cyan-200 shadow-[0_0_12px_rgba(0,240,255,0.2)]'
+              : 'bg-black/60 border-white/15 text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              settings.includeHUDInRecording !== false ? 'bg-cyan-400 animate-pulse' : 'bg-slate-500'
+            }`}
+          />
+          <span>REC HUD: {settings.includeHUDInRecording !== false ? 'ON' : 'OFF'}</span>
+        </button>
+      </div>
+
       {/* 4. Spatially Anchored Floating Info Cards (Stacking) */}
       {cards.map((card, index) => (
         <AnchoredCard
@@ -525,22 +603,24 @@ export const App: React.FC = () => {
         />
       ))}
 
-      {/* 5. Bottom Controls: Dual Mode Toggle & Tactile Capture Shutter */}
-      <div className="absolute bottom-0 left-0 right-0 z-40 px-3 sm:px-4 pb-safe pb-2 sm:pb-6 flex flex-col items-center gap-2 sm:gap-3 pointer-events-none">
-        {/* Shutter Button with status pill */}
-        <ManualTriggerButton
-          isProcessing={isProcessing}
-          onTriggerCapture={handleManualCapture}
-          statusMessage={currentDetection?.message}
-        />
-
-        {/* Two Mode Toggles: "What I'm Holding" & "What I'm Looking At" */}
-        <div className="w-full max-w-[340px] sm:max-w-md pointer-events-auto">
+      {/* 5. Bottom Controls: Split Dual Wings Layout (Mode Toggle on Left, Capture Shutter on Right) */}
+      <div className="absolute bottom-0 left-0 right-0 z-40 px-3 sm:px-6 pb-safe pb-2.5 sm:pb-5 flex items-end justify-between pointer-events-none gap-2 sm:gap-4">
+        {/* Left Wing: Mode Toggles ("What I'm Holding" & "What I'm Looking At") */}
+        <div className="w-auto max-w-[210px] sm:max-w-[320px] pointer-events-auto">
           <ModeToggle
             currentMode={mode}
             onModeChange={(newMode) => setMode(newMode)}
             framingStyle={framingStyle}
             onFramingStyleChange={(style) => setFramingStyle(style)}
+          />
+        </div>
+
+        {/* Right Wing: Tactile Capture Shutter Button with status cue */}
+        <div className="pointer-events-auto flex flex-col items-end">
+          <ManualTriggerButton
+            isProcessing={isProcessing}
+            onTriggerCapture={handleManualCapture}
+            statusMessage={currentDetection?.message}
           />
         </div>
       </div>

@@ -71,6 +71,7 @@ export interface AppSettings {
   showLandmarks: boolean;
   cameraFacingMode: 'user' | 'environment';
   lookingAtFramingStyle?: LookingAtFramingStyle;
+  includeHUDInRecording: boolean;
 }
 
 export interface SimulationPreset {

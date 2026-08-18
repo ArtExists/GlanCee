@@ -435,17 +435,17 @@ export class VLMService {
         ? 'The user is holding or presenting a physical object in front of the smart glasses camera.'
         : 'The user has framed an object or subject in their environment.';
 
-    const systemPrompt = `You are the visual cortex for AR Smart Glasses powered by Qwen 2.5-VL. ${modeContext}
+    const systemPrompt = `You are the visual cortex for AR Smart Glasses powered by Qwen 2.5-VL. ${modeContext}${hintQuery ? `\nUser hint query: "${hintQuery}"` : ''}
 Task: Accurately identify the main physical object, device, item, product, or subject shown in this image.
 
 RULES:
-1. IDENTIFY THE OBJECT: State what the physical object is clearly and accurately (e.g. "Smartphone", "Coffee Mug", "Laptop", "Wristwatch", "Water Bottle", "Pen", "Headphones", "Computer Keyboard", "Book", "Houseplant", "Eyeglasses", "Apple", "Backpack", "Chair", etc.).
-2. If a hand is holding or pointing at an item, identify the ITEM held, NOT the hand.
-3. If the user query is specific ("${hintQuery || ''}"), include relevant details.
+1. IDENTIFY THE OBJECT (CONCISE & GENERIC BASE CATEGORY): Identify the broad, basic category of the physical object. Keep the name simple, broad, and concise (e.g., "Watch" instead of "Wristwatch" or "Smartwatch", "Phone" instead of "Smartphone" or "iPhone", "Bottle" instead of "Water bottle", "Cup" or "Mug", "Pen", "Book", "Laptop", "Headphones", "Keyboard", "Mouse", "Plant", "Glasses", "Chair", "Backpack", "Remote").
+2. AVOID OVER-SPECIFICATION: Do NOT use compound modifiers, sub-types, or brand names for the primary label unless specifically asked.
+3. If a hand is holding or pointing at an item, identify the ITEM held, NOT the hand.
 4. Output strictly valid JSON with no markdown formatting:
 {
   "has_object": true,
-  "label": "Primary object name",
+  "label": "Base object category (e.g. Watch, Phone, Mug, Bottle, Book, Plant)",
   "confidence": "high",
   "search_query": "Wikipedia article title for this object"
 }
@@ -699,6 +699,82 @@ Respond in strict JSON:
   }
 
   /**
+   * Simplify and normalize specific object classifications into general canonical categories
+   */
+  private simplifyLabel(rawLabel: string): string {
+    if (!rawLabel) return 'Object';
+    const clean = rawLabel.trim().replace(/^the\s+/i, '').replace(/^a\s+/i, '').replace(/^an\s+/i, '');
+    const lower = clean.toLowerCase();
+
+    // Watch (Wristwatch, Smartwatch, Apple Watch -> Watch)
+    if (/\b(smart\s*watch|wrist\s*watch|pocket\s*watch|analog\s*watch|digital\s*watch|apple\s*watch|timepiece)\b/.test(lower) || lower === 'wristwatch' || lower === 'smartwatch') {
+      return 'Watch';
+    }
+    // Phone (Smartphone, Cell phone, iPhone, Android -> Phone)
+    if (/\b(smart\s*phone|cell\s*phone|mobile\s*phone|cellphone|smartphone|iphone|android\s*phone|telephone)\b/.test(lower)) {
+      return 'Phone';
+    }
+    // Mug
+    if (/\b(coffee\s*mug|tea\s*mug|ceramic\s*mug|travel\s*mug)\b/.test(lower)) {
+      return 'Mug';
+    }
+    // Cup
+    if (/\b(coffee\s*cup|tea\s*cup|paper\s*cup|plastic\s*cup|drinking\s*cup|disposable\s*cup)\b/.test(lower)) {
+      return 'Cup';
+    }
+    // Bottle
+    if (/\b(water\s*bottle|plastic\s*bottle|glass\s*bottle|beverage\s*bottle|vacuum\s*flask|thermos|hydro\s*flask)\b/.test(lower)) {
+      return 'Bottle';
+    }
+    // Glasses
+    if (/\b(reading\s*glasses|eye\s*glasses|eyeglasses|sunglasses|sun\s*glasses|spectacles)\b/.test(lower)) {
+      return 'Glasses';
+    }
+    // Keyboard
+    if (/\b(computer\s*keyboard|mechanical\s*keyboard|wireless\s*keyboard|bluetooth\s*keyboard|gaming\s*keyboard)\b/.test(lower)) {
+      return 'Keyboard';
+    }
+    // Mouse
+    if (/\b(computer\s*mouse|wireless\s*mouse|optical\s*mouse|gaming\s*mouse)\b/.test(lower)) {
+      return 'Mouse';
+    }
+    // Laptop
+    if (/\b(laptop\s*computer|notebook\s*computer|macbook|thinkpad|chromebook)\b/.test(lower)) {
+      return 'Laptop';
+    }
+    // Headphones
+    if (/\b(audio\s*headphones|wireless\s*headphones|over-ear\s*headphones|headset|earphones|earbuds|airpods)\b/.test(lower)) {
+      return 'Headphones';
+    }
+    // Plant
+    if (/\b(house\s*plant|potted\s*plant|indoor\s*plant|succulent\s*plant|flower\s*pot|houseplant)\b/.test(lower)) {
+      return 'Plant';
+    }
+    // Pen
+    if (/\b(ballpoint\s*pen|fountain\s*pen|gel\s*pen|marker\s*pen|stylus\s*pen)\b/.test(lower)) {
+      return 'Pen';
+    }
+    // Monitor
+    if (/\b(computer\s*monitor|display\s*monitor|lcd\s*monitor|led\s*monitor|desktop\s*screen)\b/.test(lower)) {
+      return 'Monitor';
+    }
+    // Remote
+    if (/\b(remote\s*control|tv\s*remote|television\s*remote)\b/.test(lower)) {
+      return 'Remote';
+    }
+    // Backpack
+    if (/\b(school\s*backpack|travel\s*backpack|book\s*bag|rucksack)\b/.test(lower)) {
+      return 'Backpack';
+    }
+    // Chair
+    if (/\b(office\s*chair|desk\s*chair|armchair|wooden\s*chair|swivel\s*chair)\b/.test(lower)) {
+      return 'Chair';
+    }
+
+    return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  /**
    * Universal VLM Output Parser
    */
   private parseClientVLMResult(parsed: any, provider: string): VLMIdentificationResult {
@@ -760,6 +836,8 @@ Respond in strict JSON:
       isExplicitNoObj = true;
     }
 
+    const simplifiedLabel = isExplicitNoObj ? 'No Object Detected' : this.simplifyLabel(rawLabel);
+
     const searchQuery = isExplicitNoObj
       ? ''
       : (
@@ -767,13 +845,13 @@ Respond in strict JSON:
           parsed.searchQuery ||
           parsed.wiki_title ||
           parsed.wikipedia_title ||
-          rawLabel ||
+          simplifiedLabel ||
           'Object'
         ).toString().trim();
 
     return {
       hasObject: !isExplicitNoObj,
-      label: isExplicitNoObj ? 'No Object Detected' : rawLabel,
+      label: simplifiedLabel,
       confidence: parsed.confidence || 'high',
       search_query: searchQuery,
       provider: provider,
