@@ -96,14 +96,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="bg-cyan-500/10 border border-cyan-400/30 p-3.5 rounded-2xl text-xs space-y-1.5">
             <div className="font-space font-bold text-cyan-300 flex items-center gap-1.5">
               <Sparkles className="w-4 h-4" />
-              <span>Active Model Engine:</span>
+              <span>Active Multi-Layer Vision & Knowledge Engine:</span>
             </div>
             <ul className="list-disc list-inside text-slate-300 space-y-1 font-sans text-[11px]">
               <li>
-                <strong className="text-white">Vision & Reasoner:</strong> Mistral AI (Pixtral 12B / Large + Mistral LLM)
+                <strong className="text-white">Primary Cloud VLM:</strong> Mistral AI (Pixtral 12B / Large) & Cloud VLMs
               </li>
               <li>
-                <strong className="text-white">Speech STT:</strong> Web Speech API / Whisper (OpenAI / Groq)
+                <strong className="text-white">On-Device Local Vision:</strong> TensorFlow.js Neural Vision (MobileNet & COCO-SSD) — <em>Zero API key needed</em>
+              </li>
+              <li>
+                <strong className="text-white">Knowledge Grounding:</strong> Wikipedia REST API (Free Encyclopedic Grounding)
+              </li>
+              <li>
+                <strong className="text-white">Speech STT / Audio:</strong> Web Speech API / Whisper STT
               </li>
             </ul>
           </div>

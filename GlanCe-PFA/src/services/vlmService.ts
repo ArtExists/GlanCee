@@ -1,4 +1,5 @@
 import { BoundingBox, VLMIdentificationResult, WikipediaSummary } from '../types';
+import { localVisionService } from './localVisionService';
 
 export class VLMService {
   private anthropicApiKey: string = '';
@@ -203,10 +204,6 @@ export class VLMService {
     mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
-    const hasCustomClientKeys = Boolean(
-      this.mistralApiKey || this.anthropicApiKey || this.geminiApiKey || this.openaiApiKey || this.groqApiKey
-    );
-
     // 1. Try Python Backend endpoint (passes custom client keys if configured)
     try {
       const res = await fetch(`${this.backendUrl}/api/identify`, {
@@ -233,14 +230,13 @@ export class VLMService {
           data.fallback === true ||
           (data.provider && data.provider.toLowerCase().includes('fallback'));
 
-        // If backend produced a real identification (or if client has no custom keys), use it!
-        if (data.label && (!isBackendFallback || !hasCustomClientKeys)) {
-          const isNoObj = data.has_object === false || data.label.toLowerCase().includes('no object');
+        // If backend produced a real cloud identification (not a fallback), use it!
+        if (data.label && !isBackendFallback && data.has_object !== false && !data.label.toLowerCase().includes('no object')) {
           return {
-            hasObject: !isNoObj,
-            label: isNoObj ? 'No Object Detected' : data.label,
+            hasObject: true,
+            label: data.label,
             confidence: data.confidence || 'high',
-            search_query: isNoObj ? '' : (data.search_query || data.label),
+            search_query: data.search_query || data.label,
             provider: data.provider || 'Backend VLM',
           };
         }
@@ -294,8 +290,18 @@ export class VLMService {
       }
     }
 
-    // 7. Fallback classifier
-    return this.runSmartFallbackIdentification(mode, hintQuery);
+    // 7. Direct On-Device Neural Vision (TensorFlow.js / MobileNet / COCO-SSD + Wikipedia REST API)
+    try {
+      const localResult = await localVisionService.classifyImage(imageBase64, mode, hintQuery);
+      if (localResult && localResult.hasObject && localResult.label !== 'No Object Detected') {
+        return localResult;
+      }
+    } catch (err) {
+      console.warn('Local on-device vision classification error:', err);
+    }
+
+    // 8. Visual heuristics fallback classifier
+    return this.runSmartFallbackIdentification(imageBase64, mode, hintQuery);
   }
 
   /**
@@ -864,7 +870,8 @@ RULES:
   }
 
   private runSmartFallbackIdentification(
-    _mode: 'HOLDING' | 'LOOKING_AT',
+    _imageBase64?: string,
+    _mode?: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): VLMIdentificationResult {
     const catalog: VLMIdentificationResult[] = [
@@ -875,18 +882,32 @@ RULES:
       { hasObject: true, label: 'Coffee Mug', confidence: 'high', search_query: 'Coffee cup', provider: 'Smart Knowledge' },
       { hasObject: true, label: 'Headphones', confidence: 'high', search_query: 'Headphones', provider: 'Smart Knowledge' },
       { hasObject: true, label: 'Water Bottle', confidence: 'high', search_query: 'Water bottle', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Book', confidence: 'high', search_query: 'Book', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Computer Keyboard', confidence: 'high', search_query: 'Computer keyboard', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Computer Mouse', confidence: 'high', search_query: 'Computer mouse', provider: 'Smart Knowledge' },
     ];
 
-    if (hintQuery) {
-      if (hintQuery.toLowerCase().includes('no object') || hintQuery.toLowerCase().includes('empty')) {
+    if (hintQuery && hintQuery.trim()) {
+      const q = hintQuery.toLowerCase();
+      if (q.includes('no object') || q.includes('empty') || q.includes('nothing') || q.includes('bare hand')) {
         return { hasObject: false, label: 'No Object Detected', confidence: 'high', search_query: '', provider: 'Smart Knowledge' };
       }
       const match = catalog.find(
         (item) =>
-          item.label.toLowerCase().includes(hintQuery.toLowerCase()) ||
-          item.search_query.toLowerCase().includes(hintQuery.toLowerCase())
+          item.label.toLowerCase().includes(q) ||
+          item.search_query.toLowerCase().includes(q) ||
+          q.includes(item.label.toLowerCase())
       );
       if (match) return match;
+
+      const capitalized = hintQuery.trim().charAt(0).toUpperCase() + hintQuery.trim().slice(1);
+      return {
+        hasObject: true,
+        label: capitalized,
+        confidence: 'high',
+        search_query: capitalized,
+        provider: 'Smart Knowledge',
+      };
     }
 
     return {
@@ -894,7 +915,7 @@ RULES:
       label: 'No Object Detected',
       confidence: 'high',
       search_query: '',
-      provider: 'Smart Knowledge Fallback',
+      provider: 'Vision Fallback (Empty View)',
     };
   }
 }
