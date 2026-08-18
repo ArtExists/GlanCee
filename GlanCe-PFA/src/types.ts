@@ -55,6 +55,9 @@ export interface IdentifiedCard {
 }
 
 export interface AppSettings {
+  qwenApiKey: string;
+  qwenApiBaseUrl?: string;
+  qwenModel?: string;
   anthropicApiKey: string;
   mistralApiKey: string;
   geminiApiKey: string;

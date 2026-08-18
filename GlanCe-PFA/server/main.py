@@ -30,6 +30,15 @@ http_client = httpx.AsyncClient(
     limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
 )
 
+def get_qwen_key() -> str:
+    return os.getenv("QWEN_API_KEY") or os.getenv("HUGGINGFACE_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("VITE_QWEN_API_KEY") or os.getenv("VITE_HUGGINGFACE_API_KEY") or ""
+
+def get_qwen_base_url() -> str:
+    return os.getenv("QWEN_BASE_URL") or os.getenv("VITE_QWEN_BASE_URL") or "https://router.huggingface.co/hf-inference/v1"
+
+def get_qwen_model() -> str:
+    return os.getenv("QWEN_MODEL") or os.getenv("VITE_QWEN_MODEL") or "Qwen/Qwen2.5-VL-3B-Instruct"
+
 def get_anthropic_key() -> str:
     return os.getenv("ANTHROPIC_API_KEY") or os.getenv("VITE_ANTHROPIC_API_KEY") or ""
 
@@ -52,6 +61,9 @@ class IdentifyRequest(BaseModel):
     image_base64: str
     mode: str = "HOLDING"  # "HOLDING" or "LOOKING_AT"
     user_query: Optional[str] = None
+    qwen_api_key: Optional[str] = None
+    qwen_model: Optional[str] = None
+    qwen_base_url: Optional[str] = None
     mistral_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
@@ -72,6 +84,7 @@ class GroundRequest(BaseModel):
 @app.get("/api/config")
 async def get_config():
     """Returns active providers and configuration state."""
+    has_qwen = bool(get_qwen_key())
     has_anthropic = bool(get_anthropic_key())
     has_gemini = bool(get_gemini_key())
     has_openai = bool(get_openai_key())
@@ -84,8 +97,10 @@ async def get_config():
     elif has_openai:
         active_stt = "OpenAI Whisper (whisper-1)"
 
-    active_vlm = "Smart Vision Engine (Fallback)"
-    if has_mistral:
+    active_vlm = "Qwen 2.5-VL 3B Instruct (Default VLM)"
+    if has_qwen:
+        active_vlm = f"Qwen 2.5-VL ({get_qwen_model()})"
+    elif has_mistral:
         active_vlm = "Pixtral 12B / Mistral AI"
     elif has_anthropic:
         active_vlm = "Claude 3.5 Sonnet (Anthropic)"
@@ -97,6 +112,7 @@ async def get_config():
         active_vlm = "Llama 3.2 90B Vision (Groq)"
 
     return {
+        "has_qwen": has_qwen,
         "has_mistral": has_mistral,
         "has_anthropic": has_anthropic,
         "has_gemini": has_gemini,
@@ -287,7 +303,46 @@ async def identify_object(req: IdentifyRequest):
         print(f"[VLM IDENTIFY - {provider}] -> has_object={result['has_object']}, label='{result['label']}'")
         return result
 
-    # 1. Mistral AI Pixtral (Pixtral 12B / Pixtral Large) - Primary Model
+    # 1. Qwen 2.5-VL 3B Instruct (Primary Model)
+    qwen_key = req.qwen_api_key or get_qwen_key()
+    qwen_base = (req.qwen_base_url or get_qwen_base_url()).rstrip("/")
+    qwen_model = req.qwen_model or get_qwen_model()
+
+    is_local_ollama = "localhost:11434" in qwen_base or "127.0.0.1:11434" in qwen_base
+    if qwen_key or is_local_ollama:
+        try:
+            endpoint = f"{qwen_base}/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            if qwen_key:
+                headers["Authorization"] = f"Bearer {qwen_key}"
+            if "openrouter.ai" in qwen_base:
+                headers["HTTP-Referer"] = "http://localhost:5173"
+                headers["X-Title"] = "GlanCee AR"
+
+            payload = {
+                "model": qwen_model,
+                "temperature": 0.1,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"{system_prompt}\n\nWhat is this object? Identify the specific object and Wikipedia search query in JSON."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{raw_b64}"}},
+                        ],
+                    }
+                ],
+            }
+            res = await http_client.post(endpoint, headers=headers, json=payload, timeout=25.0)
+            if res.status_code == 200:
+                raw_text = res.json()["choices"][0]["message"]["content"]
+                parsed = safe_parse_json(raw_text)
+                return format_vlm_output(parsed, f"Qwen 2.5-VL ({qwen_model})")
+            else:
+                print(f"Qwen 2.5-VL status error: {res.status_code} {res.text}")
+        except Exception as e:
+            print(f"Qwen 2.5-VL identification error: {e}")
+
+    # 2. Mistral AI Pixtral (Pixtral 12B / Pixtral Large) - Secondary Model
     mistral_key = req.mistral_api_key or get_mistral_key()
     if mistral_key:
         models_to_try = [

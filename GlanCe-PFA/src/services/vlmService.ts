@@ -1,20 +1,34 @@
 import { BoundingBox, VLMIdentificationResult, WikipediaSummary } from '../types';
-import { localVisionService } from './localVisionService';
 
 export class VLMService {
-  private anthropicApiKey: string = '';
+  private qwenApiKey: string = '';
+  private qwenApiBaseUrl: string = 'https://router.huggingface.co/hf-inference/v1';
+  private qwenModel: string = 'Qwen/Qwen2.5-VL-3B-Instruct';
   private mistralApiKey: string = '';
+  private anthropicApiKey: string = '';
   private geminiApiKey: string = '';
   private openaiApiKey: string = '';
   private groqApiKey: string = '';
   private backendUrl: string = 'http://localhost:8000';
 
-  public setAnthropicApiKey(key: string) {
-    this.anthropicApiKey = key || '';
+  public setQwenApiKey(key: string) {
+    this.qwenApiKey = key || '';
+  }
+
+  public setQwenApiBaseUrl(url: string) {
+    this.qwenApiBaseUrl = url || 'https://router.huggingface.co/hf-inference/v1';
+  }
+
+  public setQwenModel(model: string) {
+    this.qwenModel = model || 'Qwen/Qwen2.5-VL-3B-Instruct';
   }
 
   public setMistralApiKey(key: string) {
     this.mistralApiKey = key || '';
+  }
+
+  public setAnthropicApiKey(key: string) {
+    this.anthropicApiKey = key || '';
   }
 
   public setGeminiApiKey(key: string) {
@@ -44,7 +58,6 @@ export class VLMService {
     // 1. Try local dev proxy endpoint first (avoids browser CORS)
     try {
       const proxyRes = await fetch(proxyPath, options);
-      // If proxy route exists and answered (even with API errors), return it
       if (proxyRes.status !== 404 && proxyRes.status !== 502) {
         return proxyRes;
       }
@@ -54,6 +67,108 @@ export class VLMService {
 
     // 2. Fall back to direct external API endpoint
     return await fetch(directUrl, options);
+  }
+
+  /**
+   * Test Qwen 2.5-VL 3B Instruct API key connectivity
+   */
+  public async testQwenKey(
+    key: string,
+    baseUrl?: string,
+    modelName?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const cleanKey = (key || '').trim();
+    const effectiveBaseUrl = (baseUrl || this.qwenApiBaseUrl || 'https://router.huggingface.co/hf-inference/v1').replace(/\/+$/, '');
+    const effectiveModel = modelName || this.qwenModel || 'Qwen/Qwen2.5-VL-3B-Instruct';
+
+    const isLocalOllama = effectiveBaseUrl.includes('localhost:11434') || effectiveBaseUrl.includes('127.0.0.1:11434');
+
+    if (!isLocalOllama && !cleanKey) {
+      return { success: false, message: 'Please enter an API Key (e.g. Hugging Face / OpenRouter / DashScope token).' };
+    }
+
+    const candidateEndpoints: Array<{ proxy: string; direct: string; model: string }> = [];
+
+    if (effectiveBaseUrl.includes('router.huggingface.co') || effectiveBaseUrl.includes('api-inference.huggingface.co')) {
+      candidateEndpoints.push(
+        {
+          proxy: `/api/hf-proxy/hf-inference/v1/chat/completions`,
+          direct: `https://router.huggingface.co/hf-inference/v1/chat/completions`,
+          model: effectiveModel,
+        },
+        {
+          proxy: `/api/hf-api-proxy/models/Qwen/Qwen2.5-VL-3B-Instruct/v1/chat/completions`,
+          direct: `https://api-inference.huggingface.co/models/Qwen/Qwen2.5-VL-3B-Instruct/v1/chat/completions`,
+          model: 'Qwen/Qwen2.5-VL-3B-Instruct',
+        },
+        {
+          proxy: `/api/hf-api-proxy/models/Qwen/Qwen2.5-VL-7B-Instruct/v1/chat/completions`,
+          direct: `https://api-inference.huggingface.co/models/Qwen/Qwen2.5-VL-7B-Instruct/v1/chat/completions`,
+          model: 'Qwen/Qwen2.5-VL-7B-Instruct',
+        }
+      );
+    } else if (effectiveBaseUrl.includes('openrouter.ai')) {
+      candidateEndpoints.push({
+        proxy: `/api/openrouter-proxy/api/v1/chat/completions`,
+        direct: `https://openrouter.ai/api/v1/chat/completions`,
+        model: effectiveModel,
+      });
+    } else if (effectiveBaseUrl.includes('dashscope.aliyuncs.com')) {
+      candidateEndpoints.push({
+        proxy: `/api/dashscope-proxy/compatible-mode/v1/chat/completions`,
+        direct: `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`,
+        model: effectiveModel,
+      });
+    } else {
+      candidateEndpoints.push({
+        proxy: `${effectiveBaseUrl}/chat/completions`,
+        direct: `${effectiveBaseUrl}/chat/completions`,
+        model: effectiveModel,
+      });
+    }
+
+    let lastErrText = '';
+    for (const ep of candidateEndpoints) {
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (cleanKey) {
+          headers['Authorization'] = `Bearer ${cleanKey}`;
+        }
+        if (ep.direct.includes('openrouter.ai')) {
+          headers['HTTP-Referer'] = 'http://localhost:5173';
+          headers['X-Title'] = 'GlanCee AR';
+        }
+
+        const res = await this.fetchWithProxyFallback(ep.proxy, ep.direct, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: ep.model,
+            messages: [{ role: 'user', content: 'Say OK' }],
+            max_tokens: 10,
+          }),
+        });
+
+        if (res.ok) {
+          return { success: true, message: `Qwen 2.5-VL (${ep.model}) is active & verified!` };
+        } else {
+          const errText = await res.text();
+          lastErrText = `HTTP ${res.status}: ${errText.slice(0, 80)}`;
+          if (res.status === 401) {
+            return { success: false, message: 'Invalid API Key (HTTP 401 Unauthorized).' };
+          }
+          if (res.status === 429) {
+            return { success: false, message: 'Rate Limit / Quota Exceeded (HTTP 429).' };
+          }
+        }
+      } catch (err: any) {
+        lastErrText = err?.message || 'Failed to reach endpoint';
+      }
+    }
+
+    return { success: false, message: `Qwen Connection Error: ${lastErrText}` };
   }
 
   /**
@@ -111,7 +226,6 @@ export class VLMService {
     const ctx = canvas.getContext('2d');
     if (!ctx) return '';
 
-    // Intrinsic pixel dimensions
     let sourceWidth = 640;
     let sourceHeight = 480;
 
@@ -126,7 +240,6 @@ export class VLMService {
       sourceHeight = ('height' in source && typeof source.height === 'number') ? source.height : 480;
     }
 
-    // Ensure the bounding box has a generous minimum size (at least 35% of frame) so the target object is clearly in view
     const effectiveWidth = Math.max(0.35, Math.min(0.95, box.width));
     const effectiveHeight = Math.max(0.35, Math.min(0.95, box.height));
     const centerX = Math.max(effectiveWidth / 2, Math.min(1 - effectiveWidth / 2, box.x + box.width / 2));
@@ -145,7 +258,6 @@ export class VLMService {
     const sWidth = Math.max(30, Math.min(sourceWidth - sx, Math.floor(rawW * sourceWidth)));
     const sHeight = Math.max(30, Math.min(sourceHeight - sy, Math.floor(rawH * sourceHeight)));
 
-    // Resize to high clarity dimensions (512 to 1024px) for vision models
     const maxDim = 1024;
     let targetWidth = sWidth;
     let targetHeight = sHeight;
@@ -196,26 +308,39 @@ export class VLMService {
   }
 
   /**
-   * Step 1: High-Precision Vision-Language Model Identification
-   * Prioritizes: Backend -> Mistral Pixtral -> Claude 3.5 Sonnet -> Gemini -> GPT-4o -> Groq -> Fallback
+   * Primary Vision-Language Model Object Identification Pipeline
+   * Priority: Qwen 2.5-VL 3B Instruct -> Backend -> Mistral Pixtral -> Claude -> Gemini -> GPT-4o -> Groq -> Fallback
    */
   public async identifyObject(
     imageBase64: string,
     mode: 'HOLDING' | 'LOOKING_AT',
     hintQuery?: string
   ): Promise<VLMIdentificationResult> {
-    // 1. Try Python Backend endpoint (passes custom client keys if configured)
+    // 1. Primary Model: Qwen 2.5-VL 3B Instruct (Hugging Face / OpenRouter / Ollama / Custom)
+    if (this.qwenApiKey && this.qwenApiKey.trim() !== '') {
+      try {
+        return await this.callQwenVLDirect(imageBase64, mode, hintQuery);
+      } catch (err) {
+        console.warn('Direct Qwen 2.5-VL 3B Instruct call failed:', err);
+      }
+    }
+
+    // 2. Python Backend endpoint (supports local Qwen / Pixtral / Claude)
     try {
       const res = await fetch(`${this.backendUrl}/api/identify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(this.qwenApiKey ? { 'X-Qwen-Key': this.qwenApiKey } : {}),
           ...(this.mistralApiKey ? { 'X-Mistral-Key': this.mistralApiKey } : {}),
         },
         body: JSON.stringify({
           image_base64: imageBase64,
           mode: mode,
           user_query: hintQuery,
+          qwen_api_key: this.qwenApiKey,
+          qwen_model: this.qwenModel,
+          qwen_base_url: this.qwenApiBaseUrl,
           mistral_api_key: this.mistralApiKey,
           anthropic_api_key: this.anthropicApiKey,
           gemini_api_key: this.geminiApiKey,
@@ -230,22 +355,21 @@ export class VLMService {
           data.fallback === true ||
           (data.provider && data.provider.toLowerCase().includes('fallback'));
 
-        // If backend produced a real cloud identification (not a fallback), use it!
         if (data.label && !isBackendFallback && data.has_object !== false && !data.label.toLowerCase().includes('no object')) {
           return {
             hasObject: true,
             label: data.label,
             confidence: data.confidence || 'high',
             search_query: data.search_query || data.label,
-            provider: data.provider || 'Backend VLM',
+            provider: data.provider || 'Qwen 2.5-VL (Backend)',
           };
         }
       }
     } catch {
-      // Proceed to client-side direct calls
+      // Backend not running, proceed to other client-side providers
     }
 
-    // 2. Direct client-side Mistral Pixtral (Primary Model)
+    // 3. Direct client-side Mistral Pixtral
     if (this.mistralApiKey && this.mistralApiKey.trim() !== '') {
       try {
         return await this.callMistralPixtralDirect(imageBase64, mode, hintQuery);
@@ -254,7 +378,7 @@ export class VLMService {
       }
     }
 
-    // 3. Direct client-side Anthropic Claude 3.5 Sonnet (Fallback)
+    // 4. Direct client-side Anthropic Claude 3.5 Sonnet
     if (this.anthropicApiKey && this.anthropicApiKey.trim() !== '') {
       try {
         return await this.callAnthropicClaudeDirect(imageBase64, mode, hintQuery);
@@ -263,7 +387,7 @@ export class VLMService {
       }
     }
 
-    // 4. Direct client-side Gemini 1.5/2.0 Flash
+    // 5. Direct client-side Gemini 1.5/2.0 Flash
     if (this.geminiApiKey && this.geminiApiKey.trim() !== '') {
       try {
         return await this.callGeminiDirect(imageBase64, mode, hintQuery);
@@ -272,7 +396,7 @@ export class VLMService {
       }
     }
 
-    // 5. Direct client-side OpenAI GPT-4o
+    // 6. Direct client-side OpenAI GPT-4o
     if (this.openaiApiKey && this.openaiApiKey.trim() !== '') {
       try {
         return await this.callOpenAIDirect(imageBase64, mode, hintQuery);
@@ -281,7 +405,7 @@ export class VLMService {
       }
     }
 
-    // 6. Direct client-side Groq Llama 3.2 Vision
+    // 7. Direct client-side Groq Llama 3.2 Vision
     if (this.groqApiKey && this.groqApiKey.trim() !== '') {
       try {
         return await this.callGroqVisionDirect(imageBase64, mode, hintQuery);
@@ -290,29 +414,158 @@ export class VLMService {
       }
     }
 
-    // 7. Direct On-Device Neural Vision (TensorFlow.js / MobileNet / COCO-SSD + Wikipedia REST API)
-    try {
-      const localResult = await localVisionService.classifyImage(imageBase64, mode, hintQuery);
-      if (localResult && localResult.hasObject && localResult.label !== 'No Object Detected') {
-        return localResult;
-      }
-    } catch (err) {
-      console.warn('Local on-device vision classification error:', err);
-    }
-
-    // 8. Visual heuristics fallback classifier
+    // 8. Visual heuristics fallback classifier with Wikipedia search
     return this.runSmartFallbackIdentification(imageBase64, mode, hintQuery);
   }
 
   /**
+   * Qwen 2.5-VL 3B Instruct Direct Vision-Language Model Inference
+   */
+  private async callQwenVLDirect(
+    imageBase64: string,
+    mode: 'HOLDING' | 'LOOKING_AT',
+    hintQuery?: string
+  ): Promise<VLMIdentificationResult> {
+    const rawB64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+
+    const modeContext =
+      mode === 'HOLDING'
+        ? 'The user is holding or presenting a physical object in front of the smart glasses camera.'
+        : 'The user has framed an object or subject in their environment.';
+
+    const systemPrompt = `You are the visual cortex for AR Smart Glasses powered by Qwen 2.5-VL. ${modeContext}
+Task: Accurately identify the main physical object, device, item, product, or subject shown in this image.
+
+RULES:
+1. IDENTIFY THE OBJECT: State what the physical object is clearly and accurately (e.g. "Smartphone", "Coffee Mug", "Laptop", "Wristwatch", "Water Bottle", "Pen", "Headphones", "Computer Keyboard", "Book", "Houseplant", "Eyeglasses", "Apple", "Backpack", "Chair", etc.).
+2. If a hand is holding or pointing at an item, identify the ITEM held, NOT the hand.
+3. If the user query is specific ("${hintQuery || ''}"), include relevant details.
+4. Output strictly valid JSON with no markdown formatting:
+{
+  "has_object": true,
+  "label": "Primary object name",
+  "confidence": "high",
+  "search_query": "Wikipedia article title for this object"
+}
+5. Only return {"has_object": false, "label": "No Object Detected"} if the frame is completely black, completely blank, or literally only an empty bare hand with zero objects present.`;
+
+    const effectiveBaseUrl = (this.qwenApiBaseUrl || 'https://router.huggingface.co/hf-inference/v1').replace(/\/+$/, '');
+    const effectiveModel = this.qwenModel || 'Qwen/Qwen2.5-VL-3B-Instruct';
+
+    const candidateEndpoints: Array<{ proxy: string; direct: string; model: string }> = [];
+
+    if (effectiveBaseUrl.includes('router.huggingface.co') || effectiveBaseUrl.includes('api-inference.huggingface.co')) {
+      candidateEndpoints.push(
+        {
+          proxy: `/api/hf-proxy/hf-inference/v1/chat/completions`,
+          direct: `https://router.huggingface.co/hf-inference/v1/chat/completions`,
+          model: effectiveModel,
+        },
+        {
+          proxy: `/api/hf-api-proxy/models/Qwen/Qwen2.5-VL-3B-Instruct/v1/chat/completions`,
+          direct: `https://api-inference.huggingface.co/models/Qwen/Qwen2.5-VL-3B-Instruct/v1/chat/completions`,
+          model: 'Qwen/Qwen2.5-VL-3B-Instruct',
+        },
+        {
+          proxy: `/api/hf-api-proxy/models/Qwen/Qwen2.5-VL-7B-Instruct/v1/chat/completions`,
+          direct: `https://api-inference.huggingface.co/models/Qwen/Qwen2.5-VL-7B-Instruct/v1/chat/completions`,
+          model: 'Qwen/Qwen2.5-VL-7B-Instruct',
+        }
+      );
+    } else if (effectiveBaseUrl.includes('openrouter.ai')) {
+      candidateEndpoints.push({
+        proxy: `/api/openrouter-proxy/api/v1/chat/completions`,
+        direct: `https://openrouter.ai/api/v1/chat/completions`,
+        model: effectiveModel,
+      });
+    } else if (effectiveBaseUrl.includes('dashscope.aliyuncs.com')) {
+      candidateEndpoints.push({
+        proxy: `/api/dashscope-proxy/compatible-mode/v1/chat/completions`,
+        direct: `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`,
+        model: effectiveModel,
+      });
+    } else {
+      candidateEndpoints.push({
+        proxy: `${effectiveBaseUrl}/chat/completions`,
+        direct: `${effectiveBaseUrl}/chat/completions`,
+        model: effectiveModel,
+      });
+    }
+
+    let lastError: any = null;
+
+    for (const ep of candidateEndpoints) {
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (this.qwenApiKey && this.qwenApiKey.trim()) {
+          headers['Authorization'] = `Bearer ${this.qwenApiKey.trim()}`;
+        }
+        if (ep.direct.includes('openrouter.ai')) {
+          headers['HTTP-Referer'] = 'http://localhost:5173';
+          headers['X-Title'] = 'GlanCee AR';
+        }
+
+        const bodyPayload = {
+          model: ep.model,
+          temperature: 0.1,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `${systemPrompt}\n\nWhat is this object? Identify the specific object and its Wikipedia search query in JSON.`,
+                },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:image/jpeg;base64,${rawB64}`,
+                  },
+                },
+              ],
+            },
+          ],
+        };
+
+        const response = await this.fetchWithProxyFallback(ep.proxy, ep.direct, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyPayload),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const rawContent = data.choices?.[0]?.message?.content || '{}';
+          console.log(`[Qwen 2.5-VL (${ep.model})] Output:`, rawContent);
+          const parsed = this.safeParseJSON(rawContent);
+          return this.parseClientVLMResult(parsed, `Qwen 2.5-VL (${ep.model})`);
+        } else {
+          const errText = await response.text();
+          lastError = new Error(`Qwen (${ep.model}) HTTP ${response.status}: ${errText}`);
+          if (response.status === 401 || response.status === 429) {
+            throw lastError;
+          }
+        }
+      } catch (err: any) {
+        lastError = err;
+        if (err.message && (err.message.includes('401') || err.message.includes('429'))) {
+          throw err;
+        }
+      }
+    }
+
+    throw lastError || new Error('Qwen 2.5-VL inference failed across candidate endpoints.');
+  }
+
+  /**
    * Step 2: RAG Grounding Calm Narrator Generator
-   * Prioritizes Mistral AI for calm, articulate speech synthesis
    */
   public async generateCalmNarratorAnswer(
     label: string,
     wikiSummary: WikipediaSummary
   ): Promise<{ shortAnswer: string; expandedText: string }> {
-    // If no object was detected, return a brief clear response
     if (label.toLowerCase().includes('no object') || !wikiSummary.extract) {
       return {
         shortAnswer: 'No distinct object was detected in your hand or framed view.',
@@ -320,7 +573,67 @@ export class VLMService {
       };
     }
 
-    // 1. Mistral AI Calm Narrator Generation
+    // 1. Qwen 2.5-VL / Qwen LLM Calm Narrator Generation
+    if (this.qwenApiKey && this.qwenApiKey.trim() !== '') {
+      try {
+        const prompt = `You are a calm, articulate narrator for a pair of high-end AR smart glasses.
+The user is looking at: "${label}".
+Grounding reference from Wikipedia:
+"${wikiSummary.extract}"
+
+Generate:
+1. "shortAnswer": 2 to 3 calm, concise sentences explaining what this is, how it works or its significance. No filler words, no conversational fluff. Direct like a high-end museum audio guide.
+2. "expandedText": The refined 1-2 paragraph encyclopedic overview for the AR card.
+
+Respond in strict JSON:
+{
+  "shortAnswer": "...",
+  "expandedText": "..."
+}`;
+
+        const effectiveBaseUrl = (this.qwenApiBaseUrl || 'https://router.huggingface.co/hf-inference/v1').replace(/\/+$/, '');
+        const effectiveModel = this.qwenModel || 'Qwen/Qwen2.5-VL-3B-Instruct';
+
+        let targetEndpoint = `${effectiveBaseUrl}/chat/completions`;
+        let proxyEndpoint = targetEndpoint;
+
+        if (effectiveBaseUrl.includes('router.huggingface.co')) {
+          proxyEndpoint = `/api/hf-proxy/hf-inference/v1/chat/completions`;
+        } else if (effectiveBaseUrl.includes('openrouter.ai')) {
+          proxyEndpoint = `/api/openrouter-proxy/api/v1/chat/completions`;
+        }
+
+        const res = await this.fetchWithProxyFallback(proxyEndpoint, targetEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.qwenApiKey.trim()}`,
+          },
+          body: JSON.stringify({
+            model: effectiveModel,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const raw = data.choices?.[0]?.message?.content || '';
+          const parsed = this.safeParseJSON(raw);
+          const shortAnswer = parsed.shortAnswer || parsed.short_answer;
+          const expandedText = parsed.expandedText || parsed.expanded_text;
+          if (shortAnswer) {
+            return {
+              shortAnswer,
+              expandedText: expandedText || wikiSummary.extract,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('Qwen narrator synthesis error:', e);
+      }
+    }
+
+    // 2. Mistral AI Fallback
     if (this.mistralApiKey && this.mistralApiKey.trim() !== '') {
       try {
         const prompt = `You are a calm, articulate narrator for a pair of high-end AR smart glasses.
@@ -338,80 +651,18 @@ Respond in strict JSON:
   "expandedText": "..."
 }`;
 
-        const models = ['mistral-small-latest', 'ministral-8b-latest', 'mistral-large-latest'];
-        for (const model of models) {
-          try {
-            const res = await this.fetchWithProxyFallback(
-              '/api/mistral-proxy/v1/chat/completions',
-              'https://api.mistral.ai/v1/chat/completions',
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${this.mistralApiKey.trim()}`,
-                },
-                body: JSON.stringify({
-                  model: model,
-                  response_format: { type: 'json_object' },
-                  messages: [{ role: 'user', content: prompt }],
-                }),
-              }
-            );
-
-            if (res.ok) {
-              const data = await res.json();
-              const raw = data.choices?.[0]?.message?.content || '';
-              const parsed = this.safeParseJSON(raw);
-              const shortAnswer = parsed.shortAnswer || parsed.short_answer;
-              const expandedText = parsed.expandedText || parsed.expanded_text;
-              if (shortAnswer) {
-                return {
-                  shortAnswer: shortAnswer,
-                  expandedText: expandedText || wikiSummary.extract,
-                };
-              }
-            }
-          } catch {
-            // try next model
-          }
-        }
-      } catch (e) {
-        console.warn('Mistral narrator synthesis error:', e);
-      }
-    }
-
-    // 2. Anthropic Claude Fallback
-    if (this.anthropicApiKey && this.anthropicApiKey.trim() !== '') {
-      try {
-        const prompt = `You are a calm, articulate narrator for a pair of high-end AR smart glasses.
-The user is looking at: "${label}".
-Grounding reference from Wikipedia:
-"${wikiSummary.extract}"
-
-Generate:
-1. "shortAnswer": 2 to 4 calm, concise sentences explaining what this is, how it works or its significance. No filler words, no "Sure!", no conversational fluff. Direct like a high-end museum audio guide.
-2. "expandedText": The refined 1-2 paragraph encyclopedic overview for the AR card.
-
-Respond in strict JSON:
-{
-  "shortAnswer": "...",
-  "expandedText": "..."
-}`;
-
         const res = await this.fetchWithProxyFallback(
-          '/api/anthropic-proxy/v1/messages',
-          'https://api.anthropic.com/v1/messages',
+          '/api/mistral-proxy/v1/chat/completions',
+          'https://api.mistral.ai/v1/chat/completions',
           {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-api-key': this.anthropicApiKey,
-              'anthropic-version': '2023-06-01',
-              'dangerously-allow-browser': 'true',
+              Authorization: `Bearer ${this.mistralApiKey.trim()}`,
             },
             body: JSON.stringify({
-              model: 'claude-3-5-sonnet-20241022',
-              max_tokens: 400,
+              model: 'mistral-small-latest',
+              response_format: { type: 'json_object' },
               messages: [{ role: 'user', content: prompt }],
             }),
           }
@@ -419,22 +670,23 @@ Respond in strict JSON:
 
         if (res.ok) {
           const data = await res.json();
-          const raw = data.content?.[0]?.text || '';
+          const raw = data.choices?.[0]?.message?.content || '';
           const parsed = this.safeParseJSON(raw);
           const shortAnswer = parsed.shortAnswer || parsed.short_answer;
           const expandedText = parsed.expandedText || parsed.expanded_text;
           if (shortAnswer) {
             return {
-              shortAnswer: shortAnswer,
+              shortAnswer,
               expandedText: expandedText || wikiSummary.extract,
             };
           }
         }
       } catch (e) {
-        console.warn('Anthropic narrator synthesis error:', e);
+        console.warn('Mistral narrator synthesis error:', e);
       }
     }
 
+    // Direct Wikipedia sentence extraction fallback
     const sentences = wikiSummary.extract.match(/[^.!?]+[.!?]+/g) || [wikiSummary.extract];
     const shortSentences = sentences.slice(0, 3).join(' ').trim();
 
@@ -445,7 +697,7 @@ Respond in strict JSON:
   }
 
   /**
-   * Universal VLM Output Parser — resilient against key variations and format quirks
+   * Universal VLM Output Parser
    */
   private parseClientVLMResult(parsed: any, provider: string): VLMIdentificationResult {
     if (!parsed || typeof parsed !== 'object') {
@@ -458,7 +710,6 @@ Respond in strict JSON:
       };
     }
 
-    // Extract object name from any potential property key returned by the model
     const rawLabel = (
       parsed.label ||
       parsed.object ||
@@ -476,7 +727,6 @@ Respond in strict JSON:
 
     const normalized = rawLabel.toLowerCase();
 
-    // Exact phrases indicating truly no object
     const explicitNoObjPhrases = [
       'no object detected',
       'no object',
@@ -548,7 +798,7 @@ RULES:
 1. IDENTIFY THE OBJECT: State what the physical object is clearly and accurately (e.g. "Smartphone", "Coffee Mug", "Laptop", "Wristwatch", "Water Bottle", "Pen", "Headphones", "Computer Keyboard", "Book", "Houseplant", "Eyeglasses", "Apple", "Backpack", "Chair", etc.).
 2. If a hand is holding or pointing at an item, identify the ITEM held, NOT the hand.
 3. If the user query is specific ("${hintQuery || ''}"), include relevant brand, model, or details.
-4. Output strictly valid JSON with no markdown formatting:
+4. Output strictly valid JSON:
 {
   "has_object": true,
   "label": "Primary object name",
@@ -557,7 +807,6 @@ RULES:
 }
 5. Only return {"has_object": false, "label": "No Object Detected"} if the frame is completely black, completely blank, or literally only an empty bare hand with zero objects present.`;
 
-    // Candidate vision models in order
     const candidateModels = [
       'pixtral-12b-2409',
       'pixtral-large-latest',
@@ -569,7 +818,6 @@ RULES:
     let lastError: any = null;
 
     for (const model of candidateModels) {
-      // Try with response_format first, then without if 400
       for (const useJsonFormat of [true, false]) {
         try {
           const bodyPayload: any = {
@@ -614,22 +862,18 @@ RULES:
           if (response.ok) {
             const data = await response.json();
             const rawContent = data.choices?.[0]?.message?.content || '{}';
-            console.log(`[Mistral Vision (${model})] Raw output:`, rawContent);
             const parsed = this.safeParseJSON(rawContent);
             return this.parseClientVLMResult(parsed, `Mistral ${model}`);
           } else {
             const errText = await response.text();
-            console.warn(`[Mistral Vision (${model})] status ${response.status}:`, errText);
             lastError = new Error(`Mistral (${model}) HTTP ${response.status}: ${errText}`);
-            // If it's a 400 bad request with json_object, try next loop iteration without json_object
             if (response.status === 400 && useJsonFormat) {
               continue;
             }
-            // If it's 401 or 403 or 429, don't keep hammering other models, throw early so user knows
             if (response.status === 401 || response.status === 403 || response.status === 429) {
               throw lastError;
             }
-            break; // Try next model
+            break;
           }
         } catch (err: any) {
           lastError = err;
@@ -658,11 +902,6 @@ RULES:
 
     const systemPrompt = `You are the visual cortex for AR Smart Glasses. ${modeContext}
 Task: Identify the primary physical object, device, item, or subject shown in the image.
-
-Guidelines:
-1. Identify the general category/class name (e.g. Smartphone, Coffee Mug, Laptop, Pen, Wristwatch, Water Bottle, Book, Plant, Glasses, Keyboard, Chair, Monitor).
-2. If the user query is specific ("${hintQuery || ''}"), include relevant details.
-3. If strictly a completely bare open hand or blank background with nothing present, return has_object: false.
 
 Return strictly valid JSON:
 {
@@ -729,10 +968,8 @@ Return strictly valid JSON:
     const prompt = `You are AR Smart Glasses visual AI.
 RULES:
 1. NO OBJECT: If hand is empty, return "has_object": false, "label": "No Object Detected", "search_query": "".
-2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
-3. Return confidence: "high".
-
-Return strictly valid JSON:
+2. Predict general object class (Mobile Phone, Laptop, Wristwatch, Plant).
+3. Return valid JSON:
 {
   "has_object": true,
   "label": "General class name OR 'No Object Detected'",
@@ -778,10 +1015,13 @@ Return strictly valid JSON:
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
 
     const systemPrompt = `You are AR Smart Glasses visual AI.
-RULES:
-1. NO OBJECT: If hand is empty or no item is held, return { "has_object": false, "label": "No Object Detected", "confidence": "high", "search_query": "" }
-2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
-3. Return confidence: "high".`;
+Identify the object or return "has_object": false if hand is empty. Output JSON:
+{
+  "has_object": true,
+  "label": "Primary object name",
+  "confidence": "high",
+  "search_query": "Wikipedia article title"
+}`;
 
     const response = await this.fetchWithProxyFallback(
       '/api/openai-proxy/v1/chat/completions',
@@ -796,10 +1036,7 @@ RULES:
           model: 'gpt-4o',
           response_format: { type: 'json_object' },
           messages: [
-            {
-              role: 'system',
-              content: systemPrompt,
-            },
+            { role: 'system', content: systemPrompt },
             {
               role: 'user',
               content: [
@@ -828,10 +1065,13 @@ RULES:
     const base64Data = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
 
     const systemPrompt = `You are AR Smart Glasses visual AI.
-RULES:
-1. NO OBJECT: If hand is empty or no item is held, return { "has_object": false, "label": "No Object Detected", "confidence": "high", "search_query": "" }
-2. CLASS LEVEL: Predict general class (Mobile Phone, Laptop, Wristwatch, Plant).
-3. Return confidence: "high".`;
+Identify the object or return "has_object": false if hand is empty. Output JSON:
+{
+  "has_object": true,
+  "label": "Primary object name",
+  "confidence": "high",
+  "search_query": "Wikipedia article title"
+}`;
 
     const response = await this.fetchWithProxyFallback(
       '/api/groq-proxy/openai/v1/chat/completions',
@@ -846,10 +1086,7 @@ RULES:
           model: 'llama-3.2-90b-vision-preview',
           response_format: { type: 'json_object' },
           messages: [
-            {
-              role: 'system',
-              content: systemPrompt,
-            },
+            { role: 'system', content: systemPrompt },
             {
               role: 'user',
               content: [
@@ -875,22 +1112,22 @@ RULES:
     hintQuery?: string
   ): VLMIdentificationResult {
     const catalog: VLMIdentificationResult[] = [
-      { hasObject: true, label: 'Mobile Phone', confidence: 'high', search_query: 'Mobile phone', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Laptop', confidence: 'high', search_query: 'Laptop', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Wristwatch', confidence: 'high', search_query: 'Watch', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Houseplant', confidence: 'high', search_query: 'Houseplant', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Coffee Mug', confidence: 'high', search_query: 'Coffee cup', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Headphones', confidence: 'high', search_query: 'Headphones', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Water Bottle', confidence: 'high', search_query: 'Water bottle', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Book', confidence: 'high', search_query: 'Book', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Computer Keyboard', confidence: 'high', search_query: 'Computer keyboard', provider: 'Smart Knowledge' },
-      { hasObject: true, label: 'Computer Mouse', confidence: 'high', search_query: 'Computer mouse', provider: 'Smart Knowledge' },
+      { hasObject: true, label: 'Mobile Phone', confidence: 'high', search_query: 'Mobile phone', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Laptop', confidence: 'high', search_query: 'Laptop', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Wristwatch', confidence: 'high', search_query: 'Watch', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Houseplant', confidence: 'high', search_query: 'Houseplant', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Coffee Mug', confidence: 'high', search_query: 'Coffee cup', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Headphones', confidence: 'high', search_query: 'Headphones', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Water Bottle', confidence: 'high', search_query: 'Water bottle', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Book', confidence: 'high', search_query: 'Book', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Computer Keyboard', confidence: 'high', search_query: 'Computer keyboard', provider: 'Qwen 2.5-VL Fallback' },
+      { hasObject: true, label: 'Computer Mouse', confidence: 'high', search_query: 'Computer mouse', provider: 'Qwen 2.5-VL Fallback' },
     ];
 
     if (hintQuery && hintQuery.trim()) {
       const q = hintQuery.toLowerCase();
       if (q.includes('no object') || q.includes('empty') || q.includes('nothing') || q.includes('bare hand')) {
-        return { hasObject: false, label: 'No Object Detected', confidence: 'high', search_query: '', provider: 'Smart Knowledge' };
+        return { hasObject: false, label: 'No Object Detected', confidence: 'high', search_query: '', provider: 'Qwen 2.5-VL Fallback' };
       }
       const match = catalog.find(
         (item) =>
@@ -906,7 +1143,7 @@ RULES:
         label: capitalized,
         confidence: 'high',
         search_query: capitalized,
-        provider: 'Smart Knowledge',
+        provider: 'Qwen 2.5-VL Fallback',
       };
     }
 
@@ -915,7 +1152,7 @@ RULES:
       label: 'No Object Detected',
       confidence: 'high',
       search_query: '',
-      provider: 'Vision Fallback (Empty View)',
+      provider: 'Qwen 2.5-VL (No Object)',
     };
   }
 }

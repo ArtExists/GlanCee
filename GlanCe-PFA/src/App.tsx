@@ -17,13 +17,41 @@ import { gestureDetector, GestureDetectionResult } from './services/gestureDetec
 import { recordingService } from './services/recordingService';
 import { recordingStorage } from './services/recordingStorage';
 
+const getEnvString = (keys: string[]): string => {
+  const g = typeof globalThis !== 'undefined' ? (globalThis as any) : null;
+  for (const k of keys) {
+    const meta = (import.meta.env as any)[k];
+    if (meta && typeof meta === 'string' && meta.trim()) return meta.trim();
+    if (g && g.process && g.process.env && g.process.env[k]) {
+      const pVal = g.process.env[k];
+      if (pVal && typeof pVal === 'string' && pVal.trim()) return pVal.trim();
+    }
+  }
+  return '';
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
-  mistralApiKey: import.meta.env.VITE_MISTRAL_API_KEY || '',
-  anthropicApiKey: import.meta.env.VITE_ANTHROPIC_API_KEY || '',
-  geminiApiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
-  openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
-  groqApiKey: import.meta.env.VITE_GROQ_API_KEY || '',
-  backendUrl: 'http://localhost:8000',
+  qwenApiKey: getEnvString([
+    'VITE_QWEN_API_KEY',
+    'QWEN_API_KEY',
+    'VITE_HUGGINGFACE_API_KEY',
+    'HUGGINGFACE_API_KEY',
+    'VITE_HF_TOKEN',
+    'HF_TOKEN',
+    'VITE_HF_API_KEY',
+    'HF_API_KEY',
+    'HUGGING_FACE_HUB_TOKEN',
+    'VITE_OPENROUTER_API_KEY',
+    'OPENROUTER_API_KEY',
+  ]),
+  qwenApiBaseUrl: getEnvString(['VITE_QWEN_BASE_URL', 'QWEN_BASE_URL']) || 'https://router.huggingface.co/hf-inference/v1',
+  qwenModel: getEnvString(['VITE_QWEN_MODEL', 'QWEN_MODEL']) || 'Qwen/Qwen2.5-VL-3B-Instruct',
+  mistralApiKey: getEnvString(['VITE_MISTRAL_API_KEY', 'MISTRAL_API_KEY']),
+  anthropicApiKey: getEnvString(['VITE_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY']),
+  geminiApiKey: getEnvString(['VITE_GEMINI_API_KEY', 'GEMINI_API_KEY']),
+  openaiApiKey: getEnvString(['VITE_OPENAI_API_KEY', 'OPENAI_API_KEY']),
+  groqApiKey: getEnvString(['VITE_GROQ_API_KEY', 'GROQ_API_KEY']),
+  backendUrl: getEnvString(['VITE_BACKEND_URL', 'BACKEND_URL']) || 'http://localhost:8000',
   autoSpeak: true,
   voiceRate: 1.0,
   voicePitch: 1.0,
@@ -50,11 +78,24 @@ export const App: React.FC = () => {
   const [isRecordingReadyOpen, setIsRecordingReadyOpen] = useState<boolean>(false);
   const [framingStyle, setFramingStyle] = useState<LookingAtFramingStyle>('FINGERS_FRAME');
 
-  // Settings loaded from localStorage
+  // Settings loaded from localStorage with .env fallback
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
       const saved = localStorage.getItem('glance_settings');
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+          qwenApiKey: parsed.qwenApiKey || DEFAULT_SETTINGS.qwenApiKey,
+          mistralApiKey: parsed.mistralApiKey || DEFAULT_SETTINGS.mistralApiKey,
+          anthropicApiKey: parsed.anthropicApiKey || DEFAULT_SETTINGS.anthropicApiKey,
+          geminiApiKey: parsed.geminiApiKey || DEFAULT_SETTINGS.geminiApiKey,
+          openaiApiKey: parsed.openaiApiKey || DEFAULT_SETTINGS.openaiApiKey,
+          groqApiKey: parsed.groqApiKey || DEFAULT_SETTINGS.groqApiKey,
+        };
+      }
+      return DEFAULT_SETTINGS;
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -66,6 +107,9 @@ export const App: React.FC = () => {
 
   // Sync API Keys to VLM & Speech Services
   useEffect(() => {
+    vlmService.setQwenApiKey(settings.qwenApiKey);
+    vlmService.setQwenApiBaseUrl(settings.qwenApiBaseUrl || 'https://router.huggingface.co/hf-inference/v1');
+    vlmService.setQwenModel(settings.qwenModel || 'Qwen/Qwen2.5-VL-3B-Instruct');
     vlmService.setMistralApiKey(settings.mistralApiKey);
     vlmService.setAnthropicApiKey(settings.anthropicApiKey);
     vlmService.setGeminiApiKey(settings.geminiApiKey);
