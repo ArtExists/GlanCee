@@ -587,37 +587,58 @@ export class RecordingCompositor {
       ctx.fillText('✨ ANALYZING TARGET...', width / 2, 36);
     }
 
-    // 6. Bottom-Left Mode Indicator Pill
-    const modeLabel = state.mode === 'HOLDING' ? "MODE: WHAT I'M HOLDING" : "MODE: WHAT I'M LOOKING AT";
-    const modeColor = state.mode === 'HOLDING' ? '#00f0ff' : '#00ff9d';
-    const modeBg = state.mode === 'HOLDING' ? 'rgba(0, 240, 255, 0.2)' : 'rgba(0, 255, 157, 0.2)';
-    const modeBorder = state.mode === 'HOLDING' ? 'rgba(0, 240, 255, 0.5)' : 'rgba(0, 255, 157, 0.5)';
+    // 6. Left Side Mode Dock Graphic
+    const dockY = height / 2 - 40;
+    const isHolding = state.mode === 'HOLDING';
 
-    ctx.fillStyle = modeBg;
-    ctx.strokeStyle = modeBorder;
+    ctx.fillStyle = 'rgba(5, 7, 13, 0.8)';
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
     ctx.beginPath();
-    ctx.roundRect(16, height - 48, 220, 32, 10);
+    ctx.roundRect(16, dockY, 130, 80, 12);
     ctx.fill();
     ctx.stroke();
 
-    ctx.font = 'bold 10px "Space Mono", monospace';
-    ctx.fillStyle = modeColor;
-    ctx.textAlign = 'left';
-    ctx.fillText(modeLabel, 26, height - 28);
+    ctx.font = 'bold 9px "Space Mono", monospace';
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.7)';
+    ctx.fillText('MODE DOCK', 24, dockY + 16);
 
-    // 7. Bottom-Right Tactile Shutter HUD Graphic
-    const shutterX = width - 110;
+    // Holding Pill
+    ctx.fillStyle = isHolding ? 'rgba(0, 240, 255, 0.25)' : 'transparent';
+    ctx.strokeStyle = isHolding ? 'rgba(0, 240, 255, 0.7)' : 'rgba(255, 255, 255, 0.1)';
+    ctx.beginPath();
+    ctx.roundRect(22, dockY + 24, 118, 22, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = isHolding ? 'bold 10px "Space Grotesk", sans-serif' : '10px "Space Grotesk", sans-serif';
+    ctx.fillStyle = isHolding ? '#00f0ff' : '#94a3b8';
+    ctx.fillText('✋ HOLDING', 28, dockY + 39);
+
+    // Looking At Pill
+    ctx.fillStyle = !isHolding ? 'rgba(0, 255, 157, 0.25)' : 'transparent';
+    ctx.strokeStyle = !isHolding ? 'rgba(0, 255, 157, 0.7)' : 'rgba(255, 255, 255, 0.1)';
+    ctx.beginPath();
+    ctx.roundRect(22, dockY + 50, 118, 22, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = !isHolding ? 'bold 10px "Space Grotesk", sans-serif' : '10px "Space Grotesk", sans-serif';
+    ctx.fillStyle = !isHolding ? '#00ff9d' : '#94a3b8';
+    ctx.fillText('👁️ LOOKING AT', 28, dockY + 65);
+
+    // 7. Bottom-Center Tactile Shutter HUD Graphic
+    const shutterW = 120;
+    const shutterX = (width - shutterW) / 2;
     const shutterY = height - 48;
     ctx.fillStyle = 'rgba(0, 240, 255, 0.2)';
     ctx.strokeStyle = 'rgba(0, 240, 255, 0.6)';
     ctx.beginPath();
-    ctx.roundRect(shutterX, shutterY, 94, 32, 10);
+    ctx.roundRect(shutterX, shutterY, shutterW, 32, 10);
     ctx.fill();
     ctx.stroke();
 
-    ctx.font = 'bold 10px "Space Mono", monospace';
+    ctx.font = 'bold 11px "Space Mono", monospace';
     ctx.fillStyle = '#00f0ff';
-    ctx.fillText('📷 CAPTURE', shutterX + 12, height - 28);
+    ctx.textAlign = 'center';
+    ctx.fillText('📷 CAPTURE', width / 2, height - 28);
 
     ctx.restore();
   }

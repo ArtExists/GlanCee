@@ -589,7 +589,17 @@ export const App: React.FC = () => {
         </button>
       </div>
 
-      {/* 4. Spatially Anchored Floating Info Cards (Stacking) */}
+      {/* 4. Left Side Dock: Mode Toggle ("Holding" vs "Looking At") */}
+      <div className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-40 pointer-events-auto flex flex-col items-start gap-2">
+        <ModeToggle
+          currentMode={mode}
+          onModeChange={(newMode) => setMode(newMode)}
+          framingStyle={framingStyle}
+          onFramingStyleChange={(style) => setFramingStyle(style)}
+        />
+      </div>
+
+      {/* 5. Spatially Anchored Floating Info Cards (Stacking) */}
       {cards.map((card, index) => (
         <AnchoredCard
           key={card.id}
@@ -603,20 +613,9 @@ export const App: React.FC = () => {
         />
       ))}
 
-      {/* 5. Bottom Controls: Split Dual Wings Layout (Mode Toggle on Left, Capture Shutter on Right) */}
-      <div className="absolute bottom-0 left-0 right-0 z-40 px-3 sm:px-6 pb-safe pb-2.5 sm:pb-5 flex items-end justify-between pointer-events-none gap-2 sm:gap-4">
-        {/* Left Wing: Mode Toggles ("What I'm Holding" & "What I'm Looking At") */}
-        <div className="w-auto max-w-[210px] sm:max-w-[320px] pointer-events-auto">
-          <ModeToggle
-            currentMode={mode}
-            onModeChange={(newMode) => setMode(newMode)}
-            framingStyle={framingStyle}
-            onFramingStyleChange={(style) => setFramingStyle(style)}
-          />
-        </div>
-
-        {/* Right Wing: Tactile Capture Shutter Button with status cue */}
-        <div className="pointer-events-auto flex flex-col items-end">
+      {/* 6. Bottom Controls: Tactile Capture Shutter Button & Status */}
+      <div className="absolute bottom-0 left-0 right-0 z-40 px-3 sm:px-6 pb-safe pb-2.5 sm:pb-6 flex justify-center pointer-events-none">
+        <div className="pointer-events-auto flex flex-col items-center">
           <ManualTriggerButton
             isProcessing={isProcessing}
             onTriggerCapture={handleManualCapture}
