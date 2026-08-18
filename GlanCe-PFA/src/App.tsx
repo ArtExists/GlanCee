@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { AppMode, AppSettings, BoundingBox, IdentifiedCard, LookingAtFramingStyle, RecordedSession, SimulationPreset } from './types';
 import { TopBar } from './components/GlassesHUD/TopBar';
 import { ModeToggle } from './components/GlassesHUD/ModeToggle';
@@ -662,9 +663,9 @@ export const App: React.FC = () => {
           onClose={() => setIsRecordingReadyOpen(false)}
         />
       )}
+      <Analytics />
     </div>
   );
 };
 
 export default App;
-
